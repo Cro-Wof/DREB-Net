@@ -1,0 +1,11 @@
+cd .../DREB-Net
+
+mkdir -p third_party
+
+git clone https://github.com/hzwer/ECCV2022-RIFE.git \
+  third_party/ECCV2022-RIFE
+
+mkdir -p third_party/RIFE_m
+
+然后从官方 README 的 RIFE_m model 下载权重，并保证文件位于：
+../DREB-Net/third_party/RIFE_m/flownet.pkl

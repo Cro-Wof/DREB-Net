@@ -1,0 +1,16 @@
+CUDA_VISIBLE_DEVICES=1 python tools/visdrone_vid/generate_motion_blur.py \
+  --dataset-root /home/zhuhongxiang/DataSet/VisDrone2019-VID \
+  --output-root /home/zhuhongxiang/DataSet/VisDrone2019-VID-DREB \
+  --splits train val test-dev \
+  --flow-backend rife \
+  --rife-root /home/zhuhongxiang/XM/DREB-Net/third_party/ECCV2022-RIFE \
+  --rife-model-dir /home/zhuhongxiang/XM/DREB-Net/third_party/RIFE_m \
+  --device cuda \
+  --rife-fp16 \
+  --rife-scale 1.0 \
+  --exposure-span 5.0 \
+  --num-subframes 21 \
+  --weight-mode uniform \
+  --jpeg-quality 100 \
+  --interp-cache-size 32 \
+  --overwrite
