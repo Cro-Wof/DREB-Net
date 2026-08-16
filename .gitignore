@@ -1,0 +1,45 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Packaging and build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# IDE and editor settings
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Logs, caches, and experiment outputs
+*.log
+logs/
+tensorboard/
+debug/
+exp/
+
+# Model checkpoints and generated results
+*.pt
+*.pth
+*.ckpt
+results.json
+result.txt
+
+# Compiled extensions generated locally
+lib/external_nms/*.so
+
+
+/figure
