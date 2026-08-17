@@ -157,6 +157,11 @@ class CtdetTrainer(object):
         avg_loss_stats = {l: AverageMeter() for l in self.loss_stats}
         num_iters = len(data_loader) if opt.num_iters < 0 else opt.num_iters
         bar = Bar('{}/{}'.format(opt.task, opt.exp_id), max=num_iters)
+        if opt.print_iter > 0:
+            # Keep Bar's index/throughput/ETA updated, but suppress its
+            # per-iteration carriage-return output.  Status is printed below
+            # at the requested interval instead.
+            bar.update = lambda: None
         end = time.time()
         for iter_id, batch in enumerate(data_loader):
             if iter_id >= num_iters:
@@ -187,11 +192,11 @@ class CtdetTrainer(object):
             if not opt.hide_data_time:
                 Bar.suffix = Bar.suffix + '|Data {dt.val:.3f}s({dt.avg:.3f}s) ' \
                     '|Net {bt.avg:.3f}s'.format(dt=data_time, bt=batch_time)
-            if opt.print_iter > 0:
-                if iter_id % opt.print_iter == 0:
-                    print('{}/{}| {}'.format(opt.task, opt.exp_id, Bar.suffix)) 
-            else:
-                bar.next()
+            bar.next()
+            if opt.print_iter > 0 and (
+                iter_id % opt.print_iter == 0 or iter_id == num_iters - 1
+            ):
+                print('{}/{}| {}'.format(opt.task, opt.exp_id, Bar.suffix), flush=True)
             
             if opt.debug > 0:
                 self.debug(batch, output, iter_id)

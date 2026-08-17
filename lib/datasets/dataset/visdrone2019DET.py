@@ -26,21 +26,53 @@ class VisDrone2019DET(data.Dataset):
         super(VisDrone2019DET, self).__init__()
         self.sharp_data_dir = opt.sharp_data_dir
         self.blur_data_dir = opt.blur_data_dir
-        self.sharp_img_dir = os.path.join(self.sharp_data_dir, 'VisDrone2019-DET-{}/images'.format(split))
-        self.blur_img_dir = os.path.join(self.blur_data_dir, 'VisDrone2019-DET-{}/images'.format(split))
-
-        if split == 'test-dev':
+        if getattr(opt, 'dataset', 'visdrone') == 'visdrone_vid':
+            # VisDrone-VID keeps sharp frames under one directory per
+            # sequence, while the prepared DREB root keeps blurred frames
+            # and COCO annotations under each split.
+            self.sharp_img_dir = os.path.join(
+                self.sharp_data_dir,
+                'VisDrone2019-VID-{}'.format(split),
+                'sequences',
+            )
+            self.blur_img_dir = os.path.join(
+                self.blur_data_dir,
+                split,
+                'blur_images',
+            )
             self.annot_path = os.path.join(
-                '../dataset/VisDrone/Annotations/annotations' + str(VISDRONE_num_classes), 
-                'annotations_VisDrone_dev.json')
+                self.blur_data_dir,
+                split,
+                'annotations_dreb4.json',
+            )
+            dataset_name = 'VisDrone-VID'
         else:
-            self.annot_path = os.path.join(
-                '../dataset/VisDrone/Annotations/annotations' + str(VISDRONE_num_classes), 
-                'annotations_VisDrone_{}.json').format(split)
+            self.sharp_img_dir = os.path.join(self.sharp_data_dir, 'VisDrone2019-DET-{}/images'.format(split))
+            self.blur_img_dir = os.path.join(self.blur_data_dir, 'VisDrone2019-DET-{}/images'.format(split))
+
+            if split == 'test-dev':
+                self.annot_path = os.path.join(
+                    '../dataset/VisDrone/Annotations/annotations' + str(VISDRONE_num_classes),
+                    'annotations_VisDrone_dev.json')
+            else:
+                self.annot_path = os.path.join(
+                    '../dataset/VisDrone/Annotations/annotations' + str(VISDRONE_num_classes),
+                    'annotations_VisDrone_{}.json').format(split)
+            dataset_name = 'VisDrone-DET'
+
+        if getattr(opt, 'dataset', 'visdrone') == 'visdrone_vid':
+            for required_path in (self.sharp_img_dir, self.blur_img_dir, self.annot_path):
+                if not os.path.exists(required_path):
+                    raise FileNotFoundError(
+                        'VisDrone-VID path does not exist: {}'.format(required_path)
+                    )
             
         print('annot_path:', self.annot_path)
                 
-        self.max_objs = 128
+        # Some prepared VisDrone-VID frames contain up to 159 valid DREB
+        # objects.  Keep headroom so CTDetDataset does not silently truncate
+        # annotations during training or evaluation.
+        self.max_objs = 256
         self.class_name = VISDRONE_class_name
         self._valid_ids = VISDRONE_valid_ids
 
@@ -59,12 +91,40 @@ class VisDrone2019DET(data.Dataset):
         self.split = split
         self.opt = opt
 
-        print('==> initializing VisDrone-2019-DET {} data. visdrone2019DET-preprocess'.format(split))
+        print('==> initializing {} {} data'.format(dataset_name, split))
         self.coco = coco.COCO(self.annot_path)
         self.images = self.coco.getImgIds()
+        if (
+            getattr(opt, 'dataset', 'visdrone') == 'visdrone_vid'
+            and getattr(opt, 'max_frames_per_sequence', 0) > 0
+        ):
+            self.images = self._limit_frames_per_sequence(
+                self.images,
+                opt.max_frames_per_sequence,
+            )
+            print(
+                'VisDrone-VID prefix frame limit: first {} consecutive frames per sequence; '
+                'using {} images'.format(opt.max_frames_per_sequence, len(self.images))
+            )
         self.num_samples = len(self.images)
 
         print('Loaded {} {} samples'.format(split, self.num_samples))
+
+    def _limit_frames_per_sequence(self, image_ids, max_frames):
+        """Keep the first deterministic consecutive frames per VID sequence."""
+        grouped = {}
+        for image_id in image_ids:
+            file_name = self.coco.imgs[image_id]['file_name']
+            sequence_id = os.path.dirname(file_name)
+            grouped.setdefault(sequence_id, []).append(image_id)
+
+        selected = []
+        for sequence_ids in grouped.values():
+            # annotations_dreb4.json is generated in frame-number order.
+            # Taking the prefix preserves temporal continuity and keeps the
+            # exact same sample set across runs.
+            selected.extend(sequence_ids[:max_frames])
+        return selected
 
     def _to_float(self, x):
         return float("{:.2f}".format(x))

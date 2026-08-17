@@ -3,6 +3,8 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import time
+from datetime import datetime, timedelta
 
 import torch
 import torch.utils.data
@@ -14,6 +16,11 @@ from lib.logger import Logger
 from lib.datasets.dataset_factory import get_dataset
 from lib.trains.ctdet_trainer import CtdetTrainer as Trainer
 from lib.utils.general import one_cycle, one_flat_cycle
+
+
+def format_duration(seconds):
+    """Format a duration compactly for epoch-level training summaries."""
+    return str(timedelta(seconds=max(0, int(seconds))))
 
 def main(opt):
     torch.manual_seed(opt.seed)
@@ -71,7 +78,9 @@ def main(opt):
 
     print('Starting training...')
     best = 1e10
+    training_start_time = time.time()
     for epoch in range(start_epoch + 1, opt.num_epochs + 1):
+        epoch_start_time = time.time()
         mark = epoch if opt.save_all else 'last'
         log_dict_train, _ = trainer.train(epoch, train_loader, logger)
         logger.write('epoch: {} |'.format(epoch))
@@ -84,6 +93,7 @@ def main(opt):
         if epoch >= 190 or (epoch%10 == 0 and epoch != 0):
             save_model(os.path.join(opt.save_dir, 'model_{}.pth'.format(epoch)), epoch, model, optimizer)
 
+        log_dict_val = None
         if opt.val_intervals > 0 and epoch % opt.val_intervals == 0:
             save_model(os.path.join(opt.save_dir, 'model_{}.pth'.format(mark)), epoch, model, optimizer)
             with torch.no_grad():
@@ -98,6 +108,39 @@ def main(opt):
         else:
             save_model(os.path.join(opt.save_dir, 'model_last.pth'), epoch, model, optimizer)
         logger.write('\n')
+
+        # Print one epoch-level summary after validation (or after training if
+        # validation is disabled).  The loss values here are the weighted
+        # total losses, not the individual loss components.
+        elapsed_seconds = time.time() - training_start_time
+        epoch_seconds = time.time() - epoch_start_time
+        average_epoch_seconds = elapsed_seconds / epoch
+        remaining_seconds = average_epoch_seconds * (opt.num_epochs - epoch)
+        estimated_finish = datetime.now() + timedelta(seconds=remaining_seconds)
+        val_loss_text = (
+            '{:.4f}'.format(log_dict_val['loss'])
+            if log_dict_val is not None else 'N/A'
+        )
+        best_text = (
+            '{:.4f}'.format(best)
+            if best < 1e10 else 'N/A'
+        )
+        epoch_summary = (
+            '[Epoch {}/{}] train_loss={:.4f} | val_loss={} | best_val_loss={} | '
+            'epoch_time={} | elapsed={} | ETA={} | finish~{}'
+        ).format(
+            epoch,
+            opt.num_epochs,
+            log_dict_train['loss'],
+            val_loss_text,
+            best_text,
+            format_duration(epoch_seconds),
+            format_duration(elapsed_seconds),
+            format_duration(remaining_seconds),
+            estimated_finish.strftime('%Y-%m-%d %H:%M:%S'),
+        )
+        print(epoch_summary, flush=True)
+        logger.write(epoch_summary + '\n')
 
 
     logger.close()

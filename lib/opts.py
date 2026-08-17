@@ -15,7 +15,7 @@ class opts(object):
         self.parser.add_argument('--inp_sharp_or_blur', default='sharp', help='sharp | blur | SB_deblur',)
         self.parser.add_argument('--sharp_data_dir', default='',)
         self.parser.add_argument('--blur_data_dir', default='',)
-        self.parser.add_argument('--dataset', default='visdrone', help='visdrone | uavdt')
+        self.parser.add_argument('--dataset', default='visdrone', help='visdrone | visdrone_vid | uavdt')
         self.parser.add_argument('--exp_id', default='default')
         self.parser.add_argument('--test', action='store_true')
         self.parser.add_argument('--debug', type=int, default=0,
@@ -37,7 +37,8 @@ class opts(object):
         self.parser.add_argument('--seed', type=int, default=317, help='random seed') # from CornerNet
 
         # log
-        self.parser.add_argument('--print_iter', type=int, default=0, help='disable progress bar and print to screen.')
+        self.parser.add_argument('--print_iter', type=int, default=0,
+                                 help='if > 0, print one status line every N iterations and disable the live progress bar.')
         self.parser.add_argument('--hide_data_time', action='store_true', help='not display time during training.')
         self.parser.add_argument('--save_all', action='store_true', help='save model to disk every 5 epochs.')
         self.parser.add_argument('--metric', default='loss',  help='main metric to save best model')
@@ -81,6 +82,8 @@ class opts(object):
 
         # dataset
         self.parser.add_argument('--not_rand_crop', action='store_true', help='not use the random crop data augmentation from CornerNet.')
+        self.parser.add_argument('--max_frames_per_sequence', type=int, default=0,
+                                 help='VisDrone-VID only: keep the first N consecutive frames per sequence; 0 keeps all frames.')
         self.parser.add_argument('--shift', type=float, default=0.1, help='when not using random crop apply shift augmentation.')
         self.parser.add_argument('--scale', type=float, default=0.4, help='when not using random crop apply scale augmentation.')
         self.parser.add_argument('--rotate', type=float, default=0, help='when not using random crop apply rotation augmentation.')
@@ -183,4 +186,3 @@ class opts(object):
             assert 0, 'task not defined!'
         print('heads', opt.heads)
         return opt
-

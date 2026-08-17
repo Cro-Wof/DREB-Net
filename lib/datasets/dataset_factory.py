@@ -16,6 +16,7 @@ from lib.datasets.dataset.uavdt import UAVDT
 
 dataset_factory = {
     'visdrone':VisDrone2019DET,
+    'visdrone_vid':VisDrone2019DET,
     'uavdt':UAVDT,
 }
 
