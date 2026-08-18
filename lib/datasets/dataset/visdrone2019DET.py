@@ -167,6 +167,10 @@ class VisDrone2019DET(data.Dataset):
         self.save_results(results, save_dir)
         coco_dets = self.coco.loadRes('{}/results.json'.format(save_dir))
         coco_eval = COCOeval(self.coco, coco_dets, "bbox")
+        # Evaluate exactly the images used by this dataset instance.  This is
+        # important for VisDrone-VID prefix experiments, where self.images may
+        # contain only the first N consecutive frames of each sequence.
+        coco_eval.params.imgIds = list(self.images)
         coco_eval.evaluate()
         coco_eval.accumulate()
         # coco_eval.summarize()	#原始是这一行，为了保存结果到文本使用下面的代码

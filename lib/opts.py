@@ -43,6 +43,10 @@ class opts(object):
         self.parser.add_argument('--save_all', action='store_true', help='save model to disk every 5 epochs.')
         self.parser.add_argument('--metric', default='loss',  help='main metric to save best model')
         self.parser.add_argument('--vis_thresh', type=float, default=0.3, help='visualization threshold.')
+        self.parser.add_argument('--save_visualizations', action='store_true',
+                                 help='save input images with predicted detection boxes.')
+        self.parser.add_argument('--vis_dir', default='',
+                                 help='visualization output directory; defaults to <save_dir>/visualizations.')
         self.parser.add_argument('--debugger_theme', default='white', choices=['white', 'black'])
         
         # model

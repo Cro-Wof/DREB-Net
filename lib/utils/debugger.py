@@ -24,7 +24,7 @@ class Debugger(object):
             self.colors = np.clip(self.colors, 0., 0.6 * 255).astype(np.uint8)
         self.dim_scale = 1
 
-        if dataset == 'visdrone':
+        if dataset in ('visdrone', 'visdrone_vid'):
             self.names = visdrone_class_name
         elif dataset =='uavdt':
             self.names = uavdt_class_name
