@@ -106,6 +106,13 @@ class VisDrone2019DET(data.Dataset):
                 'VisDrone-VID prefix frame limit: first {} consecutive frames per sequence; '
                 'using {} images'.format(opt.max_frames_per_sequence, len(self.images))
             )
+        self._temporal_context = {}
+        if getattr(opt, 'num_input_frames', 1) > 1:
+            if getattr(opt, 'dataset', 'visdrone') != 'visdrone_vid':
+                raise ValueError('multi-frame input is currently supported only for visdrone_vid')
+            if opt.num_input_frames != 3:
+                raise ValueError('the first multi-frame implementation supports exactly 3 frames')
+            self._build_temporal_context()
         self.num_samples = len(self.images)
 
         print('Loaded {} {} samples'.format(split, self.num_samples))
@@ -125,6 +132,40 @@ class VisDrone2019DET(data.Dataset):
             # exact same sample set across runs.
             selected.extend(sequence_ids[:max_frames])
         return selected
+
+    @staticmethod
+    def _frame_sort_key(file_name):
+        stem = os.path.splitext(os.path.basename(file_name))[0]
+        try:
+            return (0, int(stem))
+        except ValueError:
+            return (1, stem)
+
+    def _build_temporal_context(self):
+        """Build [previous, center, next] inside the selected VID subset."""
+        grouped = {}
+        for image_id in self.images:
+            file_name = self.coco.imgs[image_id]['file_name']
+            sequence_id = os.path.dirname(file_name)
+            grouped.setdefault(sequence_id, []).append(file_name)
+
+        for file_names in grouped.values():
+            ordered = sorted(file_names, key=self._frame_sort_key)
+            for index, file_name in enumerate(ordered):
+                previous = ordered[max(0, index - 1)]
+                following = ordered[min(len(ordered) - 1, index + 1)]
+                self._temporal_context[file_name] = [previous, file_name, following]
+
+    def get_temporal_file_names(self, file_name):
+        """Return ordered clip file names for a center-frame file."""
+        if not self._temporal_context:
+            return [file_name]
+        try:
+            return self._temporal_context[file_name]
+        except KeyError as exc:
+            raise KeyError(
+                'frame is not part of the selected VID subset: {}'.format(file_name)
+            ) from exc
 
     def _to_float(self, x):
         return float("{:.2f}".format(x))

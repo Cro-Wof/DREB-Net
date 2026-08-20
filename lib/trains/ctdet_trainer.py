@@ -39,7 +39,10 @@ class ModelWithLoss(torch.nn.Module):
         elif self.opt.inp_sharp_or_blur == 'blur':
             outputs = self.model(batch['blur_input'])
         elif self.opt.inp_sharp_or_blur == 'SB_deblur':
-            outputs = self.model(batch['blur_input'], phase)
+            if getattr(self.opt, 'num_input_frames', 1) > 1:
+                outputs = self.model(batch['blur_clip'], phase)
+            else:
+                outputs = self.model(batch['blur_input'], phase)
         loss, loss_stats = self.loss(outputs, batch, epoch, phase)
         return outputs[-1], loss, loss_stats
 

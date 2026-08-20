@@ -248,22 +248,23 @@ def contrast_(image, aug_params, gs, gs_mean):
     blend_(alpha, image, gs_mean)
 
 
-def color_aug(data_rng, image1, image2, eig_val, eig_vec):
+def color_aug_multi(data_rng, images, eig_val, eig_vec):
+    """Apply shared color augmentation parameters to all images in a clip."""
     aug_params = generate_aug_params(data_rng)
     functions = [brightness_, contrast_, saturation_]
     random.shuffle(functions)
-    
-    gs1 = grayscale(image1)
-    gs_mean = gs1.mean()
-    for f in functions:
-        f(image1, aug_params, gs1, gs_mean)
-    lighting_(aug_params, image1, eig_val, eig_vec)
 
-    gs2 = grayscale(image2)
-    gs_mean = gs2.mean()
-    for f in functions:
-        f(image2, aug_params, gs2, gs_mean)
-    lighting_(aug_params, image2, eig_val, eig_vec)
+    for image in images:
+        gs = grayscale(image)
+        gs_mean = gs.mean()
+        for f in functions:
+            f(image, aug_params, gs, gs_mean)
+        lighting_(aug_params, image, eig_val, eig_vec)
+
+
+def color_aug(data_rng, image1, image2, eig_val, eig_vec):
+    """Backward-compatible two-image wrapper."""
+    color_aug_multi(data_rng, [image1, image2], eig_val, eig_vec)
 
 
 def generate_aug_params(data_rng):
@@ -274,4 +275,3 @@ def generate_aug_params(data_rng):
         'lighting': data_rng.normal(scale=0.1, size=(3,))
     }
     return params
-

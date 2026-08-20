@@ -6,6 +6,27 @@ import argparse
 import os
 import sys
 
+
+def make_unique_save_dir(exp_dir, exp_id, allow_existing=False):
+    """Return a non-conflicting experiment directory and its experiment ID.
+
+    Training and evaluation write files such as ``opt.txt``, ``result.txt``
+    and checkpoints into ``save_dir``. Reusing an existing ID would mix those
+    files, so a new run receives ``_1``, ``_2``, ... unless resume explicitly
+    requests the existing directory.
+    """
+    base_dir = os.path.join(exp_dir, exp_id)
+    if allow_existing or not os.path.exists(base_dir):
+        return exp_id, base_dir
+
+    suffix = 1
+    while True:
+        candidate_id = '{}_{}'.format(exp_id, suffix)
+        candidate_dir = os.path.join(exp_dir, candidate_id)
+        if not os.path.exists(candidate_dir):
+            return candidate_id, candidate_dir
+        suffix += 1
+
 class opts(object):
     def __init__(self):
         self.parser = argparse.ArgumentParser()
@@ -51,6 +72,8 @@ class opts(object):
         
         # model
         self.parser.add_argument('--arch', default='DREB_Net', help='model architecture. Currently tested')
+        self.parser.add_argument('--num_input_frames', type=int, default=1,
+                                 help='number of ordered VID frames per sample; DREB_Net_MF uses 3.')
         self.parser.add_argument('--head_conv', type=int, default=-1,
                                  help='conv layer channels for output head'
                                       '0 for no conv layer | -1 for default setting: 64 for resnets and 256 for dla.')
@@ -157,7 +180,17 @@ class opts(object):
 
         opt.root_dir = os.path.join(os.path.dirname(__file__), '..')
         opt.exp_dir = os.path.join(opt.root_dir, 'exp', opt.task, opt.mode)
-        opt.save_dir = os.path.join(opt.exp_dir, opt.exp_id)
+        requested_exp_id = opt.exp_id
+        opt.exp_id, opt.save_dir = make_unique_save_dir(
+            opt.exp_dir,
+            opt.exp_id,
+            allow_existing=opt.resume,
+        )
+        if opt.exp_id != requested_exp_id:
+            print(
+                'Output directory already exists; using new experiment ID: '
+                '{} -> {}'.format(requested_exp_id, opt.exp_id)
+            )
         opt.debug_dir = os.path.join(opt.save_dir, 'debug')
         print('The output will be saved to ', opt.save_dir)
         
