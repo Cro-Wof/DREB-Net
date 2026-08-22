@@ -15,12 +15,12 @@
 # without overrides reproduces the existing 1F baseline.
 # DREB_Net
 # DREB_Net_MF (3F-Align)
-ARCH=${ARCH:-DREB_Net}
+ARCH=${ARCH:-DREB_Net_MF}
 
 # Number of ordered video frames provided to each sample:
 #   1: original single-frame DREB
 #   3: DREB_Net_MF 3F-Align (the only multi-frame mode implemented currently)
-NUM_INPUT_FRAMES=${NUM_INPUT_FRAMES:-1}
+NUM_INPUT_FRAMES=${NUM_INPUT_FRAMES:-3}
 
 # Use a separate experiment ID for multi-frame training. If the selected ID
 # already exists, opts.py automatically appends _1, _2, ... to the output ID.
