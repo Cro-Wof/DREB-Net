@@ -200,6 +200,69 @@ class TemporalGateFusion(nn.Module):
         return center + self.residual_scale * residual
 
 
+class TemporalReliabilityGate(nn.Module):
+    """Predict whether aligned temporal evidence should affect detection.
+
+    The existing temporal fusion always produces a residual feature.  This
+    module adds an explicit center-frame fallback: a reliability value of
+    zero rejects the temporal residual, while a value of one preserves it.
+    The gate is spatial rather than global so that reliable objects and
+    unreliable background regions can be treated differently.
+    """
+
+    def __init__(self, channels=128, embed_channels=16, init_bias=2.2):
+        super(TemporalReliabilityGate, self).__init__()
+        self.project = nn.Conv2d(channels, embed_channels, kernel_size=1)
+        self.predictor = nn.Sequential(
+            nn.Conv2d(7, embed_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(embed_channels, 1, kernel_size=1),
+        )
+
+        # Start close to the existing multi-frame behavior while keeping
+        # enough sigmoid gradient for the gate to learn to reject residuals.
+        nn.init.normal_(self.predictor[-1].weight, mean=0.0, std=1e-3)
+        nn.init.constant_(self.predictor[-1].bias, init_bias)
+
+    def forward(self, center, previous, following, temporal):
+        center_embed = F.normalize(self.project(center), dim=1, eps=1e-6)
+        previous_embed = F.normalize(self.project(previous), dim=1, eps=1e-6)
+        following_embed = F.normalize(self.project(following), dim=1, eps=1e-6)
+
+        center_previous = (center_embed * previous_embed).sum(
+            dim=1, keepdim=True
+        )
+        center_following = (center_embed * following_embed).sum(
+            dim=1, keepdim=True
+        )
+        previous_following = (previous_embed * following_embed).sum(
+            dim=1, keepdim=True
+        )
+        center_previous_diff = (center_embed - previous_embed).abs().mean(
+            dim=1, keepdim=True
+        )
+        center_following_diff = (center_embed - following_embed).abs().mean(
+            dim=1, keepdim=True
+        )
+        neighbor_diff = (previous_embed - following_embed).abs().mean(
+            dim=1, keepdim=True
+        )
+        residual_magnitude = torch.tanh(
+            (temporal - center).abs().mean(dim=1, keepdim=True)
+        )
+
+        gate_features = torch.cat([
+            center_previous,
+            center_following,
+            previous_following,
+            center_previous_diff,
+            center_following_diff,
+            neighbor_diff,
+            residual_magnitude,
+        ], dim=1)
+        return torch.sigmoid(self.predictor(gate_features))
+
+
 class DREB_Net_MF(DREB_Net):
     """DREB with two-level EDVR-style temporal alignment and fusion."""
 
@@ -226,6 +289,10 @@ class DREB_Net_MF(DREB_Net):
         )
         self.temporal_fusion_s2 = TemporalGateFusion(channels=128)
         self.temporal_fusion_s1 = TemporalGateFusion(channels=64, embed_channels=16)
+        # None keeps the original two-level model behavior.  The reliability
+        # model variant installs a gate here and only affects the detection
+        # path; the deblur path continues to use the ungated temporal feature.
+        self.temporal_reliability_gate = None
         # The s1 deformable convolutions operate at 1/4 resolution and are
         # the largest new activation block.  Checkpoint this temporal branch
         # during training even though the original CLI does not expose the
@@ -293,19 +360,34 @@ class DREB_Net_MF(DREB_Net):
             s2_all[:, 2], s2, s1_all[:, 2], s1
         )
 
-        s2_temporal = self.temporal_fusion_s2(
+        s2_temporal_base = self.temporal_fusion_s2(
             s2, previous_s2, following_s2
         )
         s1_temporal = self.temporal_fusion_s1(
             s1, previous_s1, following_s1
         )
+        if self.temporal_reliability_gate is None:
+            s2_temporal_detect = s2_temporal_base
+        else:
+            reliability = self.temporal_reliability_gate(
+                s2,
+                previous_s2,
+                following_s2,
+                s2_temporal_base,
+            )
+            # q=0 is an exact center-frame fallback; q=1 reproduces the
+            # existing two-level temporal fusion output.
+            s2_temporal_detect = s2 + reliability * (
+                s2_temporal_base - s2
+            )
 
-        # Keep the DREB detection mainline unchanged; only replace the
-        # auxiliary deblur feature entering the original MAGFF module.
+        # The reliability gate is restricted to the detection branch.  This
+        # prevents the deblur loss from directly encouraging the gate to stay
+        # open in background regions.
         out = self._run_stage(self.stage1, s0)
         out = self._run_stage(self.stage2, out)
         out_LFAMM = self.LFAMM(out)
-        out = self.MAGFF_attention(out, s2_temporal)
+        out = self.MAGFF_attention(out, s2_temporal_detect)
         out = out_LFAMM + out
         out = self._run_stage(self.stage3, out)
         out = self._run_stage(self.stage4, out)
@@ -323,10 +405,10 @@ class DREB_Net_MF(DREB_Net):
             # Keep the existing deblur loss and supervision unchanged.  Only
             # replace the feature sources: s2 and s1 now use temporal fusion,
             # while the high-resolution s0 skip remains center-frame-only.
-            down3 = self.deblur_down3(s2_temporal)
+            down3 = self.deblur_down3(s2_temporal_base)
             down4 = self.deblur_down4(down3)
             up1 = self.deblur_up1(down4, down3)
-            up2 = self.deblur_up2(up1, s2_temporal)
+            up2 = self.deblur_up2(up1, s2_temporal_base)
             up3 = self.deblur_up3(up2, s1_temporal)
             up4 = self.deblur_up4(up3, s0)
             deblur_out = self.deblur_up5(up4, None)
@@ -334,9 +416,33 @@ class DREB_Net_MF(DREB_Net):
         raise ValueError('mode not eq train/val!!!')
 
 
+class DREB_Net_MF_RG(DREB_Net_MF):
+    """Two-level DREB with a detection-only temporal reliability gate."""
+
+    def __init__(self, *args, **kwargs):
+        super(DREB_Net_MF_RG, self).__init__(*args, **kwargs)
+        self.temporal_reliability_gate = TemporalReliabilityGate(
+            channels=128,
+            embed_channels=16,
+            init_bias=2.2,
+        )
+
+
 def create_DREB_Net_multiframe_detect(deploy=False, use_checkpoint=False, heads=None, head_conv=None):
     print('create_DREB_Net_MF')
     return DREB_Net_MF(
+        override_groups_map=None,
+        deploy=deploy,
+        use_checkpoint=use_checkpoint,
+        heads=heads,
+        head_conv=head_conv,
+    )
+
+
+def create_DREB_Net_multiframe_reliability_detect(
+        deploy=False, use_checkpoint=False, heads=None, head_conv=None):
+    print('create_DREB_Net_MF_RG')
+    return DREB_Net_MF_RG(
         override_groups_map=None,
         deploy=deploy,
         use_checkpoint=use_checkpoint,

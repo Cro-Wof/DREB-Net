@@ -73,7 +73,7 @@ class opts(object):
         # model
         self.parser.add_argument('--arch', default='DREB_Net', help='model architecture. Currently tested')
         self.parser.add_argument('--num_input_frames', type=int, default=1,
-                                 help='number of ordered VID frames per sample; DREB_Net_MF uses 3.')
+                                 help='number of ordered VID frames per sample; DREB_Net_MF and DREB_Net_MF_RG use 3.')
         self.parser.add_argument('--head_conv', type=int, default=-1,
                                  help='conv layer channels for output head'
                                       '0 for no conv layer | -1 for default setting: 64 for resnets and 256 for dla.')

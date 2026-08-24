@@ -4,7 +4,7 @@
 #
 # Default configuration: the completed single-frame baseline.
 # 3F-Align configuration:
-#   ARCH=DREB_Net_MF NUM_INPUT_FRAMES=3 \
+#   ARCH=DREB_Net_MF_RG NUM_INPUT_FRAMES=3 \
 #   EXP_ID=train_DREB_Net_VID_3f_align bash bash/train.sh
 #
 # All variables below can be overridden from the command line. For example:
@@ -15,22 +15,17 @@
 # without overrides reproduces the existing 1F baseline.
 # DREB_Net
 # DREB_Net_MF (3F-Align)
-ARCH=${ARCH:-DREB_Net_MF}
+# DREB_Net_MF_RG (3F-Align + temporal reliability gate)
+ARCH=${ARCH:-DREB_Net_MF_RG}
 
 # Number of ordered video frames provided to each sample:
 #   1: original single-frame DREB
-#   3: DREB_Net_MF 3F-Align (the only multi-frame mode implemented currently)
+#   3: DREB_Net_MF / DREB_Net_MF_RG three-frame modes
 NUM_INPUT_FRAMES=${NUM_INPUT_FRAMES:-3}
 
-# Use a separate experiment ID for multi-frame training. If the selected ID
-# already exists, opts.py automatically appends _1, _2, ... to the output ID.
-if [[ -z "${EXP_ID:-}" ]]; then
-  if [[ "$ARCH" == "DREB_Net_MF" && "$NUM_INPUT_FRAMES" == "3" ]]; then
-    EXP_ID=train_DREB_Net_VID_3f_align
-  else
-    EXP_ID=train_DREB_Net_VID_original
-  fi
-fi
+
+EXP_ID=${EXP_ID:-train_DREB_Net_VID_RG}
+
 
 DATASET=visdrone_vid
 INP_SHARP_OR_BLUR=SB_deblur
@@ -62,14 +57,20 @@ VAL_INTERVALS=${VAL_INTERVALS:-1}
 PRINT_ITER=${PRINT_ITER:-100}
 NUM_WORKERS=${NUM_WORKERS:-8}
 
-if [[ "$ARCH" == "DREB_Net_MF" && "$NUM_INPUT_FRAMES" != "3" ]]; then
-  echo "DREB_Net_MF requires NUM_INPUT_FRAMES=3" >&2
-  exit 1
-fi
-if [[ "$ARCH" != "DREB_Net_MF" && "$NUM_INPUT_FRAMES" != "1" ]]; then
-  echo "Only DREB_Net_MF supports NUM_INPUT_FRAMES=3" >&2
-  exit 1
-fi
+case "$ARCH" in
+  DREB_Net_MF|DREB_Net_MF_RG)
+    if [[ "$NUM_INPUT_FRAMES" != "3" ]]; then
+      echo "$ARCH requires NUM_INPUT_FRAMES=3" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    if [[ "$NUM_INPUT_FRAMES" != "1" ]]; then
+      echo "Only DREB_Net_MF and DREB_Net_MF_RG support NUM_INPUT_FRAMES=3" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 echo "Starting training: arch=${ARCH}, frames=${NUM_INPUT_FRAMES}, exp_id=${EXP_ID}"
 echo "GPU=${CUDA_TRAIN_DEVICE}, batch_size=${MASTER_BATCH_SIZE}, epochs=${NUM_EPOCHS}"

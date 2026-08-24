@@ -3,14 +3,14 @@
 # If EXP_ID already exists, opts.py automatically appends _1, _2, ... so
 # result.txt, results.json and visualizations from separate tests are not mixed.
 
-ARCH=${ARCH:-DREB_Net_MF}
-EXP_ID=${EXP_ID:-test_VID_3f_align_v2_last}
+ARCH=${ARCH:-DREB_Net_MF_RG}
+EXP_ID=${EXP_ID:-test_VID_3f_align_RG_last}
 NUM_INPUT_FRAMES=${NUM_INPUT_FRAMES:-3}
 DATASET=visdrone_vid
 INP_SHARP_OR_BLUR=SB_deblur
 SHARP_DATA_DIR=${SHARP_DATA_DIR:-/home/zhuhongxiang/DataSet/VisDrone2019-VID}
 BLUR_DATA_DIR=${BLUR_DATA_DIR:-/home/zhuhongxiang/DataSet/VisDrone2019-VID-DREB}
-MODEL_PATH=${MODEL_PATH:-./exp/detect/train/train_DREB_Net_VID_3f_align_V2_lr2e-4/model_last.pth}
+MODEL_PATH=${MODEL_PATH:-./exp/detect/train/train_DREB_Net_VID_RG/model_last.pth}
 CUDA_VAL_DEVICE=${CUDA_VAL_DEVICE:-1}
 MAX_FRAMES_PER_SEQUENCE=${MAX_FRAMES_PER_SEQUENCE:-50}
 VIS_THRESH=${VIS_THRESH:-0.3}
