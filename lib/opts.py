@@ -73,7 +73,9 @@ class opts(object):
         # model
         self.parser.add_argument('--arch', default='DREB_Net', help='model architecture. Currently tested')
         self.parser.add_argument('--num_input_frames', type=int, default=1,
-                                 help='number of ordered VID frames per sample; DREB_Net_MF and DREB_Net_MF_RG use 3.')
+                                 help='number of ordered VID frames per sample; DREB_Net_MF, DREB_Net_MF_RG and DREB_Net_MF_TDS use 3.')
+        self.parser.add_argument('--temporal_det_supervision', action='store_true',
+                                 help='enable shared aligned-neighbor heatmap supervision during three-frame training.')
         self.parser.add_argument('--head_conv', type=int, default=-1,
                                  help='conv layer channels for output head'
                                       '0 for no conv layer | -1 for default setting: 64 for resnets and 256 for dla.')
@@ -125,6 +127,20 @@ class opts(object):
         self.parser.add_argument('--off_weight', type=float, default=1, help='loss weight for keypoint local offsets.')
         self.parser.add_argument('--wh_weight', type=float, default=0.1, help='loss weight for bounding box size.')
         self.parser.add_argument('--deblur_weight', type=float, default=0.05, help='loss weight for deblur.')
+        self.parser.add_argument('--temporal_det_weight', type=float, default=0.2,
+                                 help='weight for aligned-neighbor temporal detection supervision.')
+        self.parser.add_argument('--hard_negative', action='store_true',
+                                 help='mine high-confidence background peaks from the center heatmap after warm-up.')
+        self.parser.add_argument('--hard_negative_weight', type=float, default=0.1,
+                                 help='weight for the hard-negative peak loss.')
+        self.parser.add_argument('--hard_negative_warmup_epochs', type=int, default=10,
+                                 help='epochs to wait before enabling hard-negative mining.')
+        self.parser.add_argument('--hard_negative_score_thresh', type=float, default=0.3,
+                                 help='minimum detached heatmap score for a hard-negative peak.')
+        self.parser.add_argument('--hard_negative_topk', type=int, default=32,
+                                 help='maximum mined hard-negative peaks per image.')
+        self.parser.add_argument('--hard_negative_exclusion_margin', type=int, default=1,
+                                 help='output-pixel margin around GT boxes excluded from hard-negative mining.')
 
         # task
         self.parser.add_argument('--norm_wh', action='store_true', help='L1(\hat(y) / y, 1) or L1(\hat(y), y)')
@@ -152,6 +168,34 @@ class opts(object):
         opt.fix_res = not opt.keep_res
         print('Fix size testing.' if opt.fix_res else 'Keep resolution testing.')
         opt.reg_offset = not opt.not_reg_offset
+
+        if (opt.temporal_det_supervision or opt.hard_negative) and \
+                opt.num_input_frames != 3:
+            raise ValueError(
+                'temporal_det_supervision and hard_negative require '
+                '--num_input_frames 3'
+            )
+        if (opt.temporal_det_supervision or opt.hard_negative) and \
+                opt.arch != 'DREB_Net_MF_TDS':
+            raise ValueError(
+                'temporal_det_supervision and hard_negative require '
+                '--arch DREB_Net_MF_TDS'
+            )
+        if (
+                opt.mode == 'train'
+                and (opt.temporal_det_supervision or opt.hard_negative)
+                and opt.load_model):
+            raise ValueError(
+                'B/C experiments must train from scratch: do not set '
+                '--load_model when temporal_det_supervision or '
+                'hard_negative is enabled'
+            )
+        if opt.temporal_det_weight < 0 or opt.hard_negative_weight < 0:
+            raise ValueError('temporal loss weights must be non-negative')
+        if opt.hard_negative_topk < 1:
+            raise ValueError('hard_negative_topk must be at least 1')
+        if not 0.0 <= opt.hard_negative_score_thresh < 1.0:
+            raise ValueError('hard_negative_score_thresh must be in [0, 1)')
 
         if opt.head_conv == -1: # init default head_conv
             opt.head_conv = 64

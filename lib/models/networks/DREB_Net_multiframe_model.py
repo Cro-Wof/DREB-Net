@@ -263,6 +263,31 @@ class TemporalReliabilityGate(nn.Module):
         return torch.sigmoid(self.predictor(gate_features))
 
 
+class TemporalDetectionHead(nn.Module):
+    """Shared auxiliary heatmap head for the two aligned neighbor features."""
+
+    def __init__(self, channels, num_classes, hidden_channels=64):
+        super(TemporalDetectionHead, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(channels, hidden_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.heatmap = nn.Conv2d(hidden_channels, num_classes, kernel_size=1)
+        # The auxiliary head is newly initialized when loading a two-level
+        # checkpoint. A low initial foreground prior keeps its focal loss
+        # stable during the first fine-tuning steps.
+        nn.init.constant_(self.heatmap.bias, -2.19)
+
+    def forward(self, feature):
+        heatmap = self.heatmap(self.features(feature))
+        return F.interpolate(
+            heatmap,
+            scale_factor=2,
+            mode='bilinear',
+            align_corners=False,
+        )
+
+
 class DREB_Net_MF(DREB_Net):
     """DREB with two-level EDVR-style temporal alignment and fusion."""
 
@@ -289,10 +314,6 @@ class DREB_Net_MF(DREB_Net):
         )
         self.temporal_fusion_s2 = TemporalGateFusion(channels=128)
         self.temporal_fusion_s1 = TemporalGateFusion(channels=64, embed_channels=16)
-        # None keeps the original two-level model behavior.  The reliability
-        # model variant installs a gate here and only affects the detection
-        # path; the deblur path continues to use the ungated temporal feature.
-        self.temporal_reliability_gate = None
         # The s1 deformable convolutions operate at 1/4 resolution and are
         # the largest new activation block.  Checkpoint this temporal branch
         # during training even though the original CLI does not expose the
@@ -323,6 +344,15 @@ class DREB_Net_MF(DREB_Net):
             neighbor_s1,
             center_s1,
         )
+
+    def _select_detection_temporal_feature(self, center, previous, following,
+                                            temporal):
+        """Keep the original two-level temporal feature on the base model."""
+        return temporal
+
+    def _temporal_training_outputs(self, previous_s2, following_s2):
+        """Optional hook used only by separate auxiliary-supervision models."""
+        return None
 
     def forward(self, x, mode):
         if x.ndim != 5:
@@ -366,24 +396,12 @@ class DREB_Net_MF(DREB_Net):
         s1_temporal = self.temporal_fusion_s1(
             s1, previous_s1, following_s1
         )
-        if self.temporal_reliability_gate is None:
-            s2_temporal_detect = s2_temporal_base
-        else:
-            reliability = self.temporal_reliability_gate(
-                s2,
-                previous_s2,
-                following_s2,
-                s2_temporal_base,
-            )
-            # q=0 is an exact center-frame fallback; q=1 reproduces the
-            # existing two-level temporal fusion output.
-            s2_temporal_detect = s2 + reliability * (
-                s2_temporal_base - s2
-            )
+        s2_temporal_detect = self._select_detection_temporal_feature(
+            s2, previous_s2, following_s2, s2_temporal_base
+        )
 
-        # The reliability gate is restricted to the detection branch.  This
-        # prevents the deblur loss from directly encouraging the gate to stay
-        # open in background regions.
+        # The original two-level DREB detection path receives the temporal s2
+        # feature. Subclasses may explicitly override the selection hook.
         out = self._run_stage(self.stage1, s0)
         out = self._run_stage(self.stage2, out)
         out_LFAMM = self.LFAMM(out)
@@ -402,6 +420,11 @@ class DREB_Net_MF(DREB_Net):
         if mode == 'val':
             return [ret]
         if mode == 'train':
+            temporal_outputs = self._temporal_training_outputs(
+                previous_s2, following_s2
+            )
+            if temporal_outputs is not None:
+                ret['temporal_hm'] = temporal_outputs
             # Keep the existing deblur loss and supervision unchanged.  Only
             # replace the feature sources: s2 and s1 now use temporal fusion,
             # while the high-resolution s0 skip remains center-frame-only.
@@ -427,8 +450,36 @@ class DREB_Net_MF_RG(DREB_Net_MF):
             init_bias=2.2,
         )
 
+    def _select_detection_temporal_feature(self, center, previous, following,
+                                            temporal):
+        reliability = self.temporal_reliability_gate(
+            center, previous, following, temporal
+        )
+        # q=0 is an exact center-frame fallback; q=1 reproduces the existing
+        # two-level temporal fusion output.
+        return center + reliability * (temporal - center)
 
-def create_DREB_Net_multiframe_detect(deploy=False, use_checkpoint=False, heads=None, head_conv=None):
+
+class DREB_Net_MF_TDS(DREB_Net_MF):
+    """Independent B/C architecture with auxiliary temporal detection head."""
+
+    def __init__(self, *args, **kwargs):
+        super(DREB_Net_MF_TDS, self).__init__(*args, **kwargs)
+        self.temporal_detection_head = TemporalDetectionHead(
+            channels=128,
+            num_classes=self.heads['hm'],
+        )
+
+    def _temporal_training_outputs(self, previous_s2, following_s2):
+        # Both aligned neighbors use exactly the same auxiliary head.
+        return torch.stack([
+            self.temporal_detection_head(previous_s2),
+            self.temporal_detection_head(following_s2),
+        ], dim=1)
+
+
+def create_DREB_Net_multiframe_detect(deploy=False, use_checkpoint=False, heads=None,
+                                      head_conv=None):
     print('create_DREB_Net_MF')
     return DREB_Net_MF(
         override_groups_map=None,
@@ -443,6 +494,18 @@ def create_DREB_Net_multiframe_reliability_detect(
         deploy=False, use_checkpoint=False, heads=None, head_conv=None):
     print('create_DREB_Net_MF_RG')
     return DREB_Net_MF_RG(
+        override_groups_map=None,
+        deploy=deploy,
+        use_checkpoint=use_checkpoint,
+        heads=heads,
+        head_conv=head_conv,
+    )
+
+
+def create_DREB_Net_multiframe_tds_detect(
+        deploy=False, use_checkpoint=False, heads=None, head_conv=None):
+    print('create_DREB_Net_MF_TDS')
+    return DREB_Net_MF_TDS(
         override_groups_map=None,
         deploy=deploy,
         use_checkpoint=use_checkpoint,

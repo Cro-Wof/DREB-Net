@@ -62,9 +62,60 @@ class CtdetLoss(torch.nn.Module):
 
         self.opt = opt
 
+    def _temporal_detection_loss(self, temporal_logits, temporal_target,
+                                 temporal_valid):
+        """Focal loss for aligned previous/following feature heatmaps."""
+        loss = temporal_logits.sum() * 0
+        valid_branches = 0
+        for neighbor_index in range(temporal_logits.size(1)):
+            valid_samples = temporal_valid[:, neighbor_index] > 0
+            if valid_samples.any():
+                prediction = _sigmoid(
+                    temporal_logits[:, neighbor_index][valid_samples]
+                )
+                target = temporal_target[:, neighbor_index][valid_samples]
+                loss = loss + self.crit(prediction, target)
+                valid_branches += 1
+        if valid_branches == 0:
+            return loss
+        return loss / valid_branches
+
+    def _hard_negative_loss(self, heatmap, valid_mask):
+        """Penalize detached high-confidence local maxima outside GT boxes."""
+        opt = self.opt
+        detached = heatmap.detach()
+        local_maxima = detached.eq(torch.nn.functional.max_pool2d(
+            detached, kernel_size=3, stride=1, padding=1
+        ))
+        candidate_mask = (
+            local_maxima
+            & (detached >= opt.hard_negative_score_thresh)
+            & (valid_mask > 0).expand_as(detached)
+        )
+        batch_size = heatmap.size(0)
+        flattened_scores = detached.reshape(batch_size, -1)
+        flattened_mask = candidate_mask.reshape(batch_size, -1)
+        masked_scores = flattened_scores.masked_fill(~flattened_mask, -1)
+        topk = min(opt.hard_negative_topk, masked_scores.size(1))
+        top_scores, top_indices = torch.topk(masked_scores, k=topk, dim=1)
+        selected = top_scores >= opt.hard_negative_score_thresh
+        if not selected.any():
+            return heatmap.sum() * 0
+        selected_predictions = heatmap.reshape(batch_size, -1).gather(
+            1, top_indices
+        )
+        negative_loss = -torch.log(
+            (1 - selected_predictions).clamp(min=1e-4)
+        ) * selected_predictions.pow(2)
+        selected_weight = selected.float()
+        return (negative_loss * selected_weight).sum() / (
+            selected_weight.sum() + 1e-4
+        )
+
     def forward(self, outputs, batch, epoch, phase):
         opt = self.opt
         hm_loss, wh_loss, off_loss, deblur_loss = 0, 0, 0, 0
+        temporal_hm_loss, hard_negative_loss = None, None
         for s in range(opt.num_stacks):
             if opt.inp_sharp_or_blur == 'SB_deblur' and phase == 'train':
                 output, deblur_out = outputs[0][s], outputs[1]
@@ -72,6 +123,10 @@ class CtdetLoss(torch.nn.Module):
                 output = outputs[s]
             if not opt.mse_loss:
                 output['hm'] = _sigmoid(output['hm'])
+
+            if temporal_hm_loss is None:
+                temporal_hm_loss = output['hm'].sum() * 0
+                hard_negative_loss = output['hm'].sum() * 0
 
             if opt.eval_oracle_hm:
                 output['hm'] = batch['hm']
@@ -87,6 +142,29 @@ class CtdetLoss(torch.nn.Module):
                     output['reg'].shape[3], output['reg'].shape[2])).to(opt.device)
 
             hm_loss += self.crit(output['hm'], batch['hm']) / opt.num_stacks
+            if opt.temporal_det_supervision and phase == 'train':
+                if 'temporal_hm' not in output:
+                    raise KeyError(
+                        'temporal_det_supervision is enabled but the model '
+                        'did not return temporal_hm'
+                    )
+                temporal_hm_loss += self._temporal_detection_loss(
+                    output['temporal_hm'],
+                    batch['temporal_hm'],
+                    batch['temporal_hm_valid'],
+                ) / opt.num_stacks
+            if (
+                    opt.hard_negative
+                    and phase == 'train'
+                    and epoch > opt.hard_negative_warmup_epochs):
+                if 'hard_negative_valid' not in batch:
+                    raise KeyError(
+                        'hard_negative is enabled but the dataset did not '
+                        'return hard_negative_valid'
+                    )
+                hard_negative_loss += self._hard_negative_loss(
+                    output['hm'], batch['hard_negative_valid']
+                ) / opt.num_stacks
             if opt.wh_weight > 0:
                 if opt.dense_wh:
                     mask_weight = batch['dense_wh_mask'].sum() + 1e-4
@@ -130,6 +208,13 @@ class CtdetLoss(torch.nn.Module):
             loss = opt.hm_weight * hm_loss + opt.wh_weight * wh_loss + opt.off_weight * off_loss
             loss_stats = {'loss': loss, 'hm_loss': hm_loss, 'wh_loss': wh_loss, 'off_loss': off_loss}
             
+        if opt.temporal_det_supervision:
+            loss = loss + opt.temporal_det_weight * temporal_hm_loss
+            loss_stats['temporal_hm_loss'] = temporal_hm_loss
+        if opt.hard_negative:
+            loss = loss + opt.hard_negative_weight * hard_negative_loss
+            loss_stats['hard_negative_loss'] = hard_negative_loss
+        loss_stats['loss'] = loss
         return loss, loss_stats
 
 
@@ -227,6 +312,10 @@ class CtdetTrainer(object):
         loss_states = ['loss', 'hm_loss', 'wh_loss', 'off_loss']
         if opt.inp_sharp_or_blur == 'SB_deblur':
             loss_states.append('deblur_loss')
+        if opt.temporal_det_supervision:
+            loss_states.append('temporal_hm_loss')
+        if opt.hard_negative:
+            loss_states.append('hard_negative_loss')
         loss = CtdetLoss(opt)
         return loss_states, loss
 

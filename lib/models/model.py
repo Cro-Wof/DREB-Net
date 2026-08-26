@@ -9,6 +9,7 @@ from .networks.DREB_Net_tiny_model import create_DREB_Net_tiny_detect
 from .networks.DREB_Net_multiframe_model import (
     create_DREB_Net_multiframe_detect,
     create_DREB_Net_multiframe_reliability_detect,
+    create_DREB_Net_multiframe_tds_detect,
 )
 
 _model_factory = {
@@ -16,6 +17,7 @@ _model_factory = {
     'DREB_Net_tiny': create_DREB_Net_tiny_detect,
     'DREB_Net_MF': create_DREB_Net_multiframe_detect,
     'DREB_Net_MF_RG': create_DREB_Net_multiframe_reliability_detect,
+    'DREB_Net_MF_TDS': create_DREB_Net_multiframe_tds_detect,
 }
 
 

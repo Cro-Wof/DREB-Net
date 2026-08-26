@@ -93,6 +93,10 @@ class VisDrone2019DET(data.Dataset):
 
         print('==> initializing {} {} data'.format(dataset_name, split))
         self.coco = coco.COCO(self.annot_path)
+        self._file_name_to_image_id = {
+            image['file_name']: image_id
+            for image_id, image in self.coco.imgs.items()
+        }
         self.images = self.coco.getImgIds()
         if (
             getattr(opt, 'dataset', 'visdrone') == 'visdrone_vid'
