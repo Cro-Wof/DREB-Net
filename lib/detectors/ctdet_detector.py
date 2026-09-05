@@ -115,13 +115,29 @@ class CtdetDetector(object):
             hm = output['hm'].sigmoid_()
             wh = output['wh']
             reg = output['reg'] if self.opt.reg_offset else None
+            quality = (
+                output.get('quality')
+                if getattr(self.opt, 'localization_quality', False)
+                else None
+            )
             if self.opt.flip_test:
                 hm = (hm[0:1] + flip_tensor(hm[1:2])) / 2
                 wh = (wh[0:1] + flip_tensor(wh[1:2])) / 2
                 reg = reg[0:1] if reg is not None else None
+                quality = quality[0:1] if quality is not None else None
             torch.cuda.synchronize()
             forward_time = time.time()
-            dets = ctdet_decode(hm, wh, reg=reg, cat_spec_wh=self.opt.cat_spec_wh, K=self.opt.K)
+            dets = ctdet_decode(
+                hm,
+                wh,
+                reg=reg,
+                cat_spec_wh=self.opt.cat_spec_wh,
+                K=self.opt.K,
+                quality=quality,
+                quality_power=getattr(
+                    self.opt, 'localization_quality_score_power', 1.0
+                ),
+            )
             
         if demo_with_deblur:
             return output, dets, forward_time, deblur_out

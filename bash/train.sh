@@ -2,33 +2,29 @@
 
 # DREB-VID training entry point.
 #
-# Default configuration: two-level three-frame alignment.
-# B (temporal detection supervision):
-#   ARCH=DREB_Net_MF_TDS TEMPORAL_DET_SUPERVISION=1 \
-#   EXP_ID=train_DREB_Net_VID_B bash bash/train.sh
-# C (B + hard negative):
-#   ARCH=DREB_Net_MF_TDS TEMPORAL_DET_SUPERVISION=1 HARD_NEGATIVE=1 \
-#   EXP_ID=train_DREB_Net_VID_C bash bash/train.sh
+# Default configuration: restored original two-level three-frame alignment.
+# Localization-quality branch experiment:
+#   ARCH=DREB_Net_MF_LQ LOCALIZATION_QUALITY=1 \
+#   EXP_ID=train_DREB_Net_VID_3f_LQ bash bash/train.sh
 #
 # All variables below can be overridden from the command line. For example:
 #   CUDA_TRAIN_DEVICE=1 MASTER_BATCH_SIZE=4 NUM_EPOCHS=200 \
 #   bash bash/train.sh
 
-# Model architecture. The current mainline is the two-level three-frame
-# model. DREB_Net_MF_RG remains available only for later ablations.
+# Model architecture. The current baseline is the original two-level
+# three-frame model.
 # DREB_Net
 # DREB_Net_MF (3F-Align)
-# DREB_Net_MF_RG (3F-Align + temporal reliability gate)
-# DREB_Net_MF_TDS (3F-Align + temporal detection supervision branch)
-ARCH=${ARCH:-DREB_Net_MF_TDS}
+# DREB_Net_MF_LQ (3F-Align + localization quality branch)
+ARCH=${ARCH:-DREB_Net_MF_LQ}
 
 # Number of ordered video frames provided to each sample:
 #   1: original single-frame DREB
-#   3: DREB_Net_MF / DREB_Net_MF_RG three-frame modes
+#   3: DREB_Net_MF / DREB_Net_MF_LQ three-frame modes
 NUM_INPUT_FRAMES=${NUM_INPUT_FRAMES:-3}
 
 
-EXP_ID=${EXP_ID:-train_DREB_Net_VID_3f_B}
+EXP_ID=${EXP_ID:-train_DREB_Net_VID_3f_LQ}
 
 
 DATASET=visdrone_vid
@@ -41,8 +37,8 @@ BLUR_DATA_DIR=${BLUR_DATA_DIR:-/home/zhuhongxiang/DataSet/VisDrone2019-VID-DREB}
 # Checkpoints are written by main.py under this experiment directory.
 BEST_MODEL=./exp/detect/train/${EXP_ID}/model_best.pth
 LAST_MODEL=./exp/detect/train/${EXP_ID}/model_last.pth
-# Optional initialization checkpoint. Leave empty for from-scratch training;
-# B/C experiments should set this to the designated common checkpoint.
+# Optional initialization checkpoint for legacy experiments. Leave empty for
+# the A/Q comparisons, which must both use independent from-scratch training.
 LOAD_MODEL=${LOAD_MODEL:-}
 
 # CUDA_TRAIN_DEVICE is the physical GPU index before CUDA_VISIBLE_DEVICES
@@ -64,19 +60,13 @@ VAL_INTERVALS=${VAL_INTERVALS:-1}
 PRINT_ITER=${PRINT_ITER:-100}
 NUM_WORKERS=${NUM_WORKERS:-8}
 
-# B/C switches. All are disabled by default so this script retains the
-# original two-level alignment behavior unless explicitly enabled.
-TEMPORAL_DET_SUPERVISION=${TEMPORAL_DET_SUPERVISION:-1}
-TEMPORAL_DET_WEIGHT=${TEMPORAL_DET_WEIGHT:-0.2}
-HARD_NEGATIVE=${HARD_NEGATIVE:-0}
-HARD_NEGATIVE_WEIGHT=${HARD_NEGATIVE_WEIGHT:-0.1}
-HARD_NEGATIVE_WARMUP_EPOCHS=${HARD_NEGATIVE_WARMUP_EPOCHS:-10}
-HARD_NEGATIVE_SCORE_THRESH=${HARD_NEGATIVE_SCORE_THRESH:-0.3}
-HARD_NEGATIVE_TOPK=${HARD_NEGATIVE_TOPK:-32}
-HARD_NEGATIVE_EXCLUSION_MARGIN=${HARD_NEGATIVE_EXCLUSION_MARGIN:-1}
+# The current default experiment is the independent localization-quality run.
+LOCALIZATION_QUALITY=${LOCALIZATION_QUALITY:-1}
+LOCALIZATION_QUALITY_WEIGHT=${LOCALIZATION_QUALITY_WEIGHT:-0.5}
+LOCALIZATION_QUALITY_SCORE_POWER=${LOCALIZATION_QUALITY_SCORE_POWER:-1.0}
 
 case "$ARCH" in
-  DREB_Net_MF|DREB_Net_MF_RG|DREB_Net_MF_TDS)
+  DREB_Net_MF|DREB_Net_MF_LQ)
     if [[ "$NUM_INPUT_FRAMES" != "3" ]]; then
       echo "$ARCH requires NUM_INPUT_FRAMES=3" >&2
       exit 1
@@ -84,32 +74,25 @@ case "$ARCH" in
     ;;
   *)
     if [[ "$NUM_INPUT_FRAMES" != "1" ]]; then
-      echo "Only DREB_Net_MF and DREB_Net_MF_RG support NUM_INPUT_FRAMES=3" >&2
+      echo "Only DREB_Net_MF and DREB_Net_MF_LQ support NUM_INPUT_FRAMES=3" >&2
       exit 1
     fi
     ;;
 esac
 
-if [[ ( "$TEMPORAL_DET_SUPERVISION" == "1" || "$HARD_NEGATIVE" == "1" ) \
-      && "$ARCH" != "DREB_Net_MF_TDS" ]]; then
-  echo "TEMPORAL_DET_SUPERVISION and HARD_NEGATIVE require ARCH=DREB_Net_MF_TDS" >&2
+if [[ "$LOCALIZATION_QUALITY" == "1" && "$ARCH" != "DREB_Net_MF_LQ" ]]; then
+  echo "LOCALIZATION_QUALITY requires ARCH=DREB_Net_MF_LQ" >&2
   exit 1
 fi
 
-if [[ ( "$TEMPORAL_DET_SUPERVISION" == "1" || "$HARD_NEGATIVE" == "1" ) \
-      && -n "$LOAD_MODEL" ]]; then
-  echo "B/C experiments must train from scratch; leave LOAD_MODEL empty" >&2
+if [[ "$LOCALIZATION_QUALITY" == "1" && -n "$LOAD_MODEL" ]]; then
+  echo "Localization-quality experiments must train from scratch; leave LOAD_MODEL empty" >&2
   exit 1
 fi
 
-TEMPORAL_DET_FLAG=()
-if [[ "$TEMPORAL_DET_SUPERVISION" == "1" ]]; then
-  TEMPORAL_DET_FLAG+=(--temporal_det_supervision)
-fi
-
-HARD_NEGATIVE_FLAG=()
-if [[ "$HARD_NEGATIVE" == "1" ]]; then
-  HARD_NEGATIVE_FLAG+=(--hard_negative)
+LOCALIZATION_QUALITY_FLAG=()
+if [[ "$LOCALIZATION_QUALITY" == "1" ]]; then
+  LOCALIZATION_QUALITY_FLAG+=(--localization_quality)
 fi
 
 LOAD_MODEL_FLAG=()
@@ -120,8 +103,7 @@ fi
 echo "Starting training: arch=${ARCH}, frames=${NUM_INPUT_FRAMES}, exp_id=${EXP_ID}"
 echo "GPU=${CUDA_TRAIN_DEVICE}, batch_size=${MASTER_BATCH_SIZE}, epochs=${NUM_EPOCHS}"
 echo "max_frames_per_sequence=${MAX_FRAMES_PER_SEQUENCE}, input_res=${INPUT_RES}"
-echo "temporal_det_supervision=${TEMPORAL_DET_SUPERVISION} (weight=${TEMPORAL_DET_WEIGHT})"
-echo "hard_negative=${HARD_NEGATIVE} (weight=${HARD_NEGATIVE_WEIGHT}, warmup=${HARD_NEGATIVE_WARMUP_EPOCHS}, topk=${HARD_NEGATIVE_TOPK})"
+echo "localization_quality=${LOCALIZATION_QUALITY} (weight=${LOCALIZATION_QUALITY_WEIGHT}, score_power=${LOCALIZATION_QUALITY_SCORE_POWER})"
 if [[ -n "$LOAD_MODEL" ]]; then
   echo "initializing from checkpoint: ${LOAD_MODEL}"
 fi
@@ -144,13 +126,8 @@ CUDA_VISIBLE_DEVICES="$CUDA_TRAIN_DEVICE" python -u main.py \
   --max_frames_per_sequence "$MAX_FRAMES_PER_SEQUENCE" \
   --print_iter "$PRINT_ITER" \
   --num_workers "$NUM_WORKERS" \
-  --temporal_det_weight "$TEMPORAL_DET_WEIGHT" \
-  --hard_negative_weight "$HARD_NEGATIVE_WEIGHT" \
-  --hard_negative_warmup_epochs "$HARD_NEGATIVE_WARMUP_EPOCHS" \
-  --hard_negative_score_thresh "$HARD_NEGATIVE_SCORE_THRESH" \
-  --hard_negative_topk "$HARD_NEGATIVE_TOPK" \
-  --hard_negative_exclusion_margin "$HARD_NEGATIVE_EXCLUSION_MARGIN" \
-  "${TEMPORAL_DET_FLAG[@]}" \
-  "${HARD_NEGATIVE_FLAG[@]}" \
+  --localization_quality_weight "$LOCALIZATION_QUALITY_WEIGHT" \
+  --localization_quality_score_power "$LOCALIZATION_QUALITY_SCORE_POWER" \
+  "${LOCALIZATION_QUALITY_FLAG[@]}" \
   "${LOAD_MODEL_FLAG[@]}" \
   --gpus "$CUDA_TRAIN_DEVICE"

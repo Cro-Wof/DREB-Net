@@ -6,7 +6,7 @@
 
 RG 时序可靠性门控已经完成训练和测试。它相对两级对齐将 FP 从 2,571 降至 2,015，但同时将 TP 从 5,644 降至 5,198，AP 从 0.113 降至 0.107。RG 当前主要表现为削弱多帧对齐带来的整体变化，未实现“保留多帧召回优势的同时降低 FP”，因此退出当前主模型，只保留为可复现实验和后续消融架构。
 
-后续主线恢复为原两级对齐 `DREB_Net_MF`，优先增加时序检测监督，再加入 hard-negative 抑制。完整的“二级对齐 + 时序检测监督 + hard-negative”定义为 C，并作为下一阶段主模型。阈值校准仍只作为部署优化，不作为结构改进的主要证据。
+后续主线恢复为原两级对齐 `DREB_Net_MF`，先尝试第三优先级的定位质量分支。时序检测监督和 hard-negative 暂不保留在当前代码主线，待定位质量分支给出结果后再决定是否恢复。阈值校准仍只作为部署优化，不作为结构改进的主要证据。
 
 ## 1. 评估范围和指标定义
 
@@ -111,82 +111,76 @@ RG 相对两级对齐：
 当前 RG 训练从头开始，未从同一两级 checkpoint 初始化，因此该结果可以确认当前 RG 模型的最终表现，但不能把全部差异严格归因于门控本身。当前决策是：
 
 - 主线恢复为不带 RG 的 `DREB_Net_MF`；
-- 不删除 `DREB_Net_MF_RG` 代码和已有结果，只保留为 D 类后续消融；
-- 在 B、C 完成并达到验收条件之前，不继续优化 RG，也不将其与 C 默认绑定。
+- RG 代码、TDS 和 hard-negative 主线均已移除，历史 checkpoint 和结果仅保留用于审计；
+- 在 Q 完成并达到验收条件之前，不恢复上述时序抑制模块，也不开展三级对齐训练。
 
-## 6. 下一阶段模型定义与训练顺序
+## 6. 下一阶段定位质量分支
 
-| 实验 | 两级对齐 | 时序检测监督 | hard-negative | RG | 定位 |
-|---|---:|---:|---:|---:|---|
-| A：基线 | ✓ |  |  |  | `DREB_Net_MF`，独立从头训练 |
-| B：机制消融 | ✓ | ✓ |  |  | `DREB_Net_MF_TDS`，独立从头训练 |
-| **C：主模型** | ✓ | ✓ | ✓ |  | `DREB_Net_MF_TDS`，独立从头训练 |
-| D：可选消融 | ✓ | ✓ | ✓ | ✓ | C 达标后再决定是否测试 |
+| 实验 | 两级对齐 | 定位质量分支 | 训练方式 | 定位 |
+|---|---:|---:|---|---|
+| A：基线 | ✓ |  | 独立从头训练 | `DREB_Net_MF`，恢复后的原两级模型 |
+| **Q：定位质量实验** | ✓ | ✓ | 独立从头训练 | `DREB_Net_MF_LQ`，当前主线 |
 
-`DREB_Net_MF` 已恢复为原两级对齐网络，不含时序辅助检测头或其参数。`DREB_Net_MF_TDS` 是新增网络类别，固定包含共享辅助热图头；只有命令行开关决定该头是否参与损失计算。B 与 C 使用相同的 `DREB_Net_MF_TDS`，确保二者除了 hard-negative 外没有网络参数差异。
+`DREB_Net_MF` 已恢复为原两级对齐网络，不含 RG、时序辅助检测头或 hard-negative 参数。`DREB_Net_MF_LQ` 仅增加一个独立的定位质量头，不改变原检测头和两级对齐路径。
 
-### 6.1 训练顺序：先 B，后 C，均独立从头训练
+### 6.1 训练顺序：先 A，再 Q，均独立从头训练
 
-不建议先 C 后 B。hard-negative 的可靠挖掘依赖已经形成基本时序检测能力的模型；如果从训练初期就加入，早期不稳定预测容易被误当成 hard negative，并增加对遮挡、新进入目标和漏标目标的错误抑制。C 内部仍使用 warm-up，但不从 B 加载权重。
+先复原并训练 A，再训练 Q。Q 不加载 A 权重，因为质量分支会改变训练目标和模型参数，必须与历史结果采用独立从头训练口径。
 
 推荐流程：
 
 1. A：从随机初始化独立训练 `DREB_Net_MF`；
-2. B：从随机初始化独立训练 `DREB_Net_MF_TDS`，开启时序检测监督、关闭 hard-negative；
-3. B 达到稳定结果后，独立从随机初始化训练 C：使用同一 `DREB_Net_MF_TDS`，同时开启时序检测监督和 hard-negative；
-4. A、B、C 固定相同训练 epoch、学习率计划、数据子集、数据顺序、增强、seed、batch size、模型选择规则和测试协议；
-5. B 与 C 的初始化随机种子相同，使共享主干和辅助头的初始参数一致；C 的唯一新增训练信号是 hard-negative；
-6. 不使用 `LOAD_MODEL` 或 `--resume` 初始化 A、B、C，旧两级 `last` 仅作为历史参考结果。
+2. Q：从随机初始化独立训练 `DREB_Net_MF_LQ`，开启定位质量监督；
+3. A 与 Q 固定相同训练 epoch、学习率计划、数据子集、数据顺序、增强、seed、batch size、模型选择规则和测试协议；
+4. 不使用 `LOAD_MODEL` 或 `--resume` 初始化 Q，旧两级、RG 和 TDS `last` 仅作为历史参考结果。
 
-该顺序保证与已有从头训练结果具有相同实验口径：A 衡量原两级对齐，B 衡量时序检测监督，C 衡量完整主模型。B/C 之间则可直接归因于 hard-negative。
+该顺序保证 A/Q 之间的差异主要对应定位质量分支，而不是加载权重或训练轮次差异。
 
-### 6.2 B：时序检测监督
+### 6.2 定位质量监督与推理融合
 
-- 保持中心帧检测主干、两级对齐和现有推理路径不变；
-- 对对齐后的前、中、后帧特征增加共享的轻量检测监督；
-- 使用数据中已有的 `track_id` 构建同一目标跨帧正样本；
-- 第一版将时序分支作为辅助训练信号，不直接将时序质量乘到最终置信度，避免再次整体降低 TP；
-- 对序列边界、遮挡和新进入目标保留中心帧路径。
+- 质量头从最终 256 通道检测特征预测单通道质量图，不改变 `hm/wh/reg` 三个原检测输出；
+- 训练目标是在有效 GT 中心处计算当前预测框与 GT 框的 IoU，并对质量图做 Smooth-L1 监督；目标使用 `detach`，避免质量分支反向改变 IoU 标签；
+- 质量损失通过 `--localization_quality_weight` 控制，默认权重为 `0.5`；
+- 推理时在 `K` 个中心点候选上使用 `score * quality^power`，由 `--localization_quality_score_power` 控制，第一轮固定为 `1.0`；
+- A 与 Q 均使用同一公共阈值和 `K=100`，并额外报告质量融合前后 TP、FP、FN 的变化。
 
-### 6.3 C：hard-negative 抑制
+### 6.3 暂缓的时序监督与 hard-negative
 
-C 在 B 的基础上增加 hard-negative，候选必须同时满足：
+当前代码已移除上一轮 RG/TDS/hard-negative 主线，原因是：
 
-- 中心帧 heatmap 上置信度较高；
-- 与中心帧四类有效 GT 不匹配；
-- 不落入 `ignore`、`iscrowd` 或不确定区域；
-- 预测候选和样本选择过程使用 `detach`，每张图限制数量和负正比例。
+- RG 已证明会明显降低 FP，但同时损失多帧 TP/Recall；
+- 旧 hard-negative 方案主要约束中心点候选，无法可靠区分持续性背景 FP 与真实目标；
+- TDS/hard-negative 若与质量分支同时引入，将无法判断 FP 变化来自定位校准还是时序监督。
 
-第一版以中心帧全部 GT 框及其边界作为 hard-negative 排除区；B 中已匹配的跨帧轨迹在这些中心帧位置形成辅助正样本。暂不对邻帧候选框再做一次独立的检测级匹配，避免在未验证质量分支前将遮挡或新进入目标错误压制。
+待 Q 完成后，如 FP 仍主要来自背景误检且 TP/Recall 已保持，再单独恢复时序检测监督或重新设计 hard-negative，并分别做独立消融。
 
-训练初期先保持 hard-negative 权重为 0，完成 warm-up 后再开启，并监控 medium 目标、`people` 类别以及背景/定位不足 FP，防止再次出现 TP 与 FP 同时下降。
+### 6.4 训练与评估开关
 
-### 6.4 训练开关
-
-`bash/train.sh` 默认使用不带 RG 的 `DREB_Net_MF`，两个模块默认关闭。A、B、C 均不设置 `LOAD_MODEL`，典型组合如下：
+`bash/train.sh` 默认使用不带 RG 的 `DREB_Net_MF`，定位质量分支默认关闭。典型组合如下：
 
 ```bash
 # A：原两级对齐，从头训练
 EXP_ID=<a> bash bash/train.sh
 
-# B：新 TDS 网络 + 时序检测监督，从头训练
-ARCH=DREB_Net_MF_TDS TEMPORAL_DET_SUPERVISION=1 \
-EXP_ID=<b> bash bash/train.sh
-
-# C：同一新 TDS 网络 + 时序检测监督 + hard-negative，从头训练
-ARCH=DREB_Net_MF_TDS TEMPORAL_DET_SUPERVISION=1 HARD_NEGATIVE=1 \
-EXP_ID=<c> bash bash/train.sh
+# Q：定位质量分支，从头独立训练
+ARCH=DREB_Net_MF_LQ LOCALIZATION_QUALITY=1 \
+EXP_ID=<q> bash bash/train.sh
 ```
 
-可按实验结果单独调整 `TEMPORAL_DET_WEIGHT`、`HARD_NEGATIVE_WEIGHT`、`HARD_NEGATIVE_WARMUP_EPOCHS`、`HARD_NEGATIVE_SCORE_THRESH`、`HARD_NEGATIVE_TOPK` 和 `HARD_NEGATIVE_EXCLUSION_MARGIN`；未显式设置时使用脚本默认值。
+评估 Q 时必须使用相同模型类别并显式开启质量融合：
+
+```bash
+ARCH=DREB_Net_MF_LQ LOCALIZATION_QUALITY=1 \
+TRAIN_EXP_ID=<q> EXP_ID=<q_test> bash bash/evaluation_vid.sh
+```
 
 ## 7. 后续优先级
 
-1. 完成 B：时序检测监督；
-2. 完成 C：时序检测监督 + hard-negative，并作为主模型评估；
-3. 若 C 仍主要受定位不足 FP 限制，再增加 IoU 或 centerness 定位质量分支；
+1. 完成 Q：定位质量分支；
+2. 对 A/Q 做相同阈值下的 TP、FP、FN 和 AP/AR 对比；
+3. 若 Q 保持 TP/Recall 但 FP 未改善，再单独恢复时序检测监督或重新设计 hard-negative；
 4. 最后进行公平阈值和类别校准；
-5. RG 仅作为 D 类可选消融，不占用当前主线训练资源。
+5. 三级对齐放在上述结构实验之后，RG 仅保留为历史消融。
 
 Soft-NMS 可作为附加消融，但重复框占比较低，预期不是主要收益来源。
 
@@ -210,7 +204,7 @@ Soft-NMS 可作为附加消融，但重复框占比较低，预期不是主要�
 
 ## 9. 对三级对齐的影响
 
-在 C 完成并验证之前，不建议增加第三级对齐。现有趋势表明，更强对齐会增强更多真实目标，也可能同步增强稳定背景。三级对齐应放在 C 达到“保持 TP、降低 FP”的验收条件之后，再作为独立消融实验。
+在 Q 完成并验证之前，不建议增加第三级对齐。现有趋势表明，更强对齐会增强更多真实目标，也可能同步增强稳定背景。三级对齐应放在 Q 及后续 FP 抑制实验完成后，再作为独立消融实验。
 
 ## 10. 数据来源
 

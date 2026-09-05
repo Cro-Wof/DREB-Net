@@ -36,39 +36,6 @@ class CTDetDataset(data.Dataset):
         ann_ids = self.coco.getAnnIds(imgIds=[img_id])
         anns = self.coco.loadAnns(ids=ann_ids)
         num_objs = min(len(anns), self.max_objs)
-        temporal_target_enabled = (
-            self.split == 'train'
-            and getattr(self.opt, 'temporal_det_supervision', False)
-            and getattr(self.opt, 'num_input_frames', 1) == 3
-        )
-        hard_negative_enabled = (
-            self.split == 'train'
-            and getattr(self.opt, 'hard_negative', False)
-            and getattr(self.opt, 'num_input_frames', 1) == 3
-        )
-        neighbor_track_keys = []
-        temporal_hm_valid = None
-        if temporal_target_enabled:
-            temporal_hm_valid = np.ones((2,), dtype=np.float32)
-            for neighbor_index, neighbor_file_name in enumerate(
-                    [blur_file_names[0], blur_file_names[2]]):
-                # At a sequence boundary the loader repeats the center frame.
-                # It is not a temporal observation and must not add auxiliary
-                # supervision.
-                if neighbor_file_name == file_name:
-                    temporal_hm_valid[neighbor_index] = 0
-                    neighbor_track_keys.append(set())
-                    continue
-                neighbor_img_id = self._file_name_to_image_id[neighbor_file_name]
-                neighbor_ann_ids = self.coco.getAnnIds(imgIds=[neighbor_img_id])
-                neighbor_anns = self.coco.loadAnns(ids=neighbor_ann_ids)
-                neighbor_track_keys.append({
-                    (ann.get('track_id'), ann['category_id'])
-                    for ann in neighbor_anns
-                    if not ann.get('ignore', 0) and not ann.get('iscrowd', 0)
-                    and ann.get('track_id') is not None
-                })
-        
         sharp_img = cv2.imread(sharp_img_path)
         blur_imgs = [cv2.imread(path) for path in blur_img_paths]
         if sharp_img is None:
@@ -146,12 +113,6 @@ class CTDetDataset(data.Dataset):
         trans_output = get_affine_transform(c, s, 0, [output_w, output_h])
 
         hm = np.zeros((num_classes, output_h, output_w), dtype=np.float32)
-        temporal_hm = np.zeros(
-            (2, num_classes, output_h, output_w), dtype=np.float32
-        ) if temporal_target_enabled else None
-        hard_negative_valid = np.ones(
-            (1, output_h, output_w), dtype=np.float32
-        ) if hard_negative_enabled else None
         wh = np.zeros((self.max_objs, 2), dtype=np.float32)
         dense_wh = np.zeros((2, output_h, output_w), dtype=np.float32)
         reg = np.zeros((self.max_objs, 2), dtype=np.float32)
@@ -175,13 +136,6 @@ class CTDetDataset(data.Dataset):
             bbox[[1, 3]] = np.clip(bbox[[1, 3]], 0, output_h - 1)
             h, w = bbox[3] - bbox[1], bbox[2] - bbox[0]
             if h > 0 and w > 0:
-                if hard_negative_valid is not None:
-                    margin = self.opt.hard_negative_exclusion_margin
-                    x1 = max(0, int(np.floor(bbox[0])) - margin)
-                    y1 = max(0, int(np.floor(bbox[1])) - margin)
-                    x2 = min(output_w, int(np.ceil(bbox[2])) + margin + 1)
-                    y2 = min(output_h, int(np.ceil(bbox[3])) + margin + 1)
-                    hard_negative_valid[0, y1:y2, x1:x2] = 0
                 radius = gaussian_radius((math.ceil(h), math.ceil(w)))
                 radius = max(0, int(radius))
                 radius = self.opt.hm_gauss if self.opt.mse_loss else radius
@@ -189,21 +143,6 @@ class CTDetDataset(data.Dataset):
                     [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2], dtype=np.float32)
                 ct_int = ct.astype(np.int32)
                 draw_gaussian(hm[cls_id], ct_int, radius)
-                if (
-                        temporal_hm is not None
-                        and not ann.get('ignore', 0)
-                        and not ann.get('iscrowd', 0)
-                        and ann.get('track_id') is not None):
-                    track_key = (ann.get('track_id'), ann['category_id'])
-                    for neighbor_index, tracks in enumerate(neighbor_track_keys):
-                        if (
-                                temporal_hm_valid[neighbor_index] > 0
-                                and track_key in tracks):
-                            draw_gaussian(
-                                temporal_hm[neighbor_index, cls_id],
-                                ct_int,
-                                radius,
-                            )
                 wh[k] = 1. * w, 1. * h
                 ind[k] = ct_int[1] * output_w + ct_int[0]
                 reg[k] = ct - ct_int
@@ -225,11 +164,6 @@ class CTDetDataset(data.Dataset):
         }
         if getattr(self.opt, 'num_input_frames', 1) > 1:
             ret['blur_clip'] = np.stack(blur_inps, axis=0)
-        if temporal_hm is not None:
-            ret['temporal_hm'] = temporal_hm
-            ret['temporal_hm_valid'] = temporal_hm_valid
-        if hard_negative_valid is not None:
-            ret['hard_negative_valid'] = hard_negative_valid
         if self.opt.dense_wh:
             hm_a = hm.max(axis=0, keepdims=True)
             dense_wh_mask = np.concatenate([hm_a, hm_a], axis=0)
