@@ -50,17 +50,7 @@ class CtdetDetector(object):
         height, width = image.shape[0:2]
         new_height = int(height * scale)
         new_width  = int(width * scale)
-        if meta is not None:
-            c = np.array(meta['c'], dtype=np.float32)
-            s = np.array(meta['s'], dtype=np.float32)
-            if s.ndim == 0:
-                s = float(s)
-            if self.opt.fix_res:
-                inp_height, inp_width = self.opt.input_h, self.opt.input_w
-            else:
-                inp_height = (new_height | self.opt.pad) + 1
-                inp_width = (new_width | self.opt.pad) + 1
-        elif self.opt.fix_res:
+        if self.opt.fix_res:
             inp_height, inp_width = self.opt.input_h, self.opt.input_w
             c = np.array([new_width / 2., new_height / 2.], dtype=np.float32)
             s = max(height, width) * 1.0
@@ -87,22 +77,6 @@ class CtdetDetector(object):
         return images, meta
 
 
-    def pre_process_clip(self, images, scale):
-        """Pre-process an ordered three-frame clip with one shared transform."""
-        if len(images) != 3:
-            raise ValueError('DREB_Net_MF expects exactly three images per clip')
-        processed = []
-        clip_meta = None
-        for image in images:
-            frame, frame_meta = self.pre_process(image, scale, meta=clip_meta)
-            if clip_meta is None:
-                clip_meta = frame_meta
-            processed.append(frame)
-        # Each frame is [flip_batch, C, H, W]. The multi-frame model expects
-        # [flip_batch, T, C, H, W].
-        return torch.stack(processed, dim=1), clip_meta
-
-
     def process(self, images, return_time=False, demo_with_deblur=False):
         with torch.no_grad():
             if demo_with_deblur == True:
@@ -115,29 +89,13 @@ class CtdetDetector(object):
             hm = output['hm'].sigmoid_()
             wh = output['wh']
             reg = output['reg'] if self.opt.reg_offset else None
-            quality = (
-                output.get('quality')
-                if getattr(self.opt, 'localization_quality', False)
-                else None
-            )
             if self.opt.flip_test:
                 hm = (hm[0:1] + flip_tensor(hm[1:2])) / 2
                 wh = (wh[0:1] + flip_tensor(wh[1:2])) / 2
                 reg = reg[0:1] if reg is not None else None
-                quality = quality[0:1] if quality is not None else None
             torch.cuda.synchronize()
             forward_time = time.time()
-            dets = ctdet_decode(
-                hm,
-                wh,
-                reg=reg,
-                cat_spec_wh=self.opt.cat_spec_wh,
-                K=self.opt.K,
-                quality=quality,
-                quality_power=getattr(
-                    self.opt, 'localization_quality_score_power', 1.0
-                ),
-            )
+            dets = ctdet_decode(hm, wh, reg=reg, cat_spec_wh=self.opt.cat_spec_wh, K=self.opt.K)
             
         if demo_with_deblur:
             return output, dets, forward_time, deblur_out
@@ -166,18 +124,8 @@ class CtdetDetector(object):
                             theme=self.opt.debugger_theme)
         start_time = time.time()
         pre_processed = False
-        is_clip = isinstance(image_or_path_or_tensor, (list, tuple))
         if isinstance(image_or_path_or_tensor, np.ndarray):
             image = image_or_path_or_tensor
-        elif is_clip:
-            clip_images = []
-            for item in image_or_path_or_tensor:
-                frame = cv2.imread(item) if isinstance(item, str) else item
-                if frame is None:
-                    raise RuntimeError('failed to decode one frame in clip')
-                clip_images.append(frame)
-            image = clip_images[len(clip_images) // 2]
-            image_or_path_or_tensor = clip_images
         elif type(image_or_path_or_tensor) == type (''): 
             image = cv2.imread(image_or_path_or_tensor)
         else:
@@ -192,10 +140,7 @@ class CtdetDetector(object):
         for scale in self.scales:
             scale_start_time = time.time()
             if not pre_processed:
-                if is_clip:
-                    images, meta = self.pre_process_clip(image_or_path_or_tensor, scale)
-                else:
-                    images, meta = self.pre_process(image, scale, meta)
+                images, meta = self.pre_process(image, scale, meta)
             else:
                 # import pdb; pdb.set_trace()
                 images = pre_processed_images['images'][scale][0]
@@ -263,8 +208,6 @@ class CtdetDetector(object):
     def debug(self, debugger, images, dets, output, scale=1):
         detection = dets.detach().cpu().numpy().copy()
         detection[:, :, :4] *= self.opt.down_ratio
-        if images.ndim == 5:
-            images = images[:, images.shape[1] // 2]
         for i in range(1):
             img = images[i].detach().cpu().numpy().transpose(1, 2, 0)
             img = ((img * self.std + self.mean) * 255).astype(np.uint8)

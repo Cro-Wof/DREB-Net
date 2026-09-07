@@ -6,27 +6,6 @@ import argparse
 import os
 import sys
 
-
-def make_unique_save_dir(exp_dir, exp_id, allow_existing=False):
-    """Return a non-conflicting experiment directory and its experiment ID.
-
-    Training and evaluation write files such as ``opt.txt``, ``result.txt``
-    and checkpoints into ``save_dir``. Reusing an existing ID would mix those
-    files, so a new run receives ``_1``, ``_2``, ... unless resume explicitly
-    requests the existing directory.
-    """
-    base_dir = os.path.join(exp_dir, exp_id)
-    if allow_existing or not os.path.exists(base_dir):
-        return exp_id, base_dir
-
-    suffix = 1
-    while True:
-        candidate_id = '{}_{}'.format(exp_id, suffix)
-        candidate_dir = os.path.join(exp_dir, candidate_id)
-        if not os.path.exists(candidate_dir):
-            return candidate_id, candidate_dir
-        suffix += 1
-
 class opts(object):
     def __init__(self):
         self.parser = argparse.ArgumentParser()
@@ -34,6 +13,8 @@ class opts(object):
         self.parser.add_argument('--task', default='detect',)
         self.parser.add_argument('--mode', default='train/test',)
         self.parser.add_argument('--inp_sharp_or_blur', default='sharp', help='sharp | blur | SB_deblur',)
+        self.parser.add_argument('--num_input_frames', type=int, default=1,
+                                 help='number of temporal input frames; the current VID pipeline supports 1.')
         self.parser.add_argument('--sharp_data_dir', default='',)
         self.parser.add_argument('--blur_data_dir', default='',)
         self.parser.add_argument('--dataset', default='visdrone', help='visdrone | visdrone_vid | uavdt')
@@ -72,8 +53,6 @@ class opts(object):
         
         # model
         self.parser.add_argument('--arch', default='DREB_Net', help='model architecture. Currently tested')
-        self.parser.add_argument('--num_input_frames', type=int, default=1,
-                                 help='number of ordered VID frames per sample; DREB_Net_MF and DREB_Net_MF_LQ use 3.')
         self.parser.add_argument('--head_conv', type=int, default=-1,
                                  help='conv layer channels for output head'
                                       '0 for no conv layer | -1 for default setting: 64 for resnets and 256 for dla.')
@@ -125,12 +104,6 @@ class opts(object):
         self.parser.add_argument('--off_weight', type=float, default=1, help='loss weight for keypoint local offsets.')
         self.parser.add_argument('--wh_weight', type=float, default=0.1, help='loss weight for bounding box size.')
         self.parser.add_argument('--deblur_weight', type=float, default=0.05, help='loss weight for deblur.')
-        self.parser.add_argument('--localization_quality', action='store_true',
-                                 help='enable IoU-based localization quality supervision and score fusion.')
-        self.parser.add_argument('--localization_quality_weight', type=float, default=0.5,
-                                 help='weight for the localization quality loss.')
-        self.parser.add_argument('--localization_quality_score_power', type=float, default=1.0,
-                                 help='power applied to the predicted quality when fusing detection scores.')
 
         # task
         self.parser.add_argument('--norm_wh', action='store_true', help='L1(\hat(y) / y, 1) or L1(\hat(y), y)')
@@ -159,31 +132,6 @@ class opts(object):
         print('Fix size testing.' if opt.fix_res else 'Keep resolution testing.')
         opt.reg_offset = not opt.not_reg_offset
 
-        if opt.localization_quality and \
-                opt.num_input_frames != 3:
-            raise ValueError(
-                'localization_quality requires '
-                '--num_input_frames 3'
-            )
-        if opt.localization_quality and opt.arch != 'DREB_Net_MF_LQ':
-            raise ValueError(
-                'localization_quality requires --arch DREB_Net_MF_LQ'
-            )
-        if (
-                opt.mode == 'train'
-                and opt.localization_quality
-                and opt.load_model):
-            raise ValueError(
-                'localization-quality experiments must train from scratch: '
-                'do not set --load_model'
-            )
-        if opt.localization_quality_weight < 0:
-            raise ValueError('localization_quality_weight must be non-negative')
-        if opt.localization_quality_score_power <= 0:
-            raise ValueError('localization_quality_score_power must be positive')
-        if opt.localization_quality and opt.not_reg_offset:
-            raise ValueError('localization_quality requires regression offsets')
-
         if opt.head_conv == -1: # init default head_conv
             opt.head_conv = 64
         opt.pad = 31
@@ -211,17 +159,7 @@ class opts(object):
 
         opt.root_dir = os.path.join(os.path.dirname(__file__), '..')
         opt.exp_dir = os.path.join(opt.root_dir, 'exp', opt.task, opt.mode)
-        requested_exp_id = opt.exp_id
-        opt.exp_id, opt.save_dir = make_unique_save_dir(
-            opt.exp_dir,
-            opt.exp_id,
-            allow_existing=opt.resume,
-        )
-        if opt.exp_id != requested_exp_id:
-            print(
-                'Output directory already exists; using new experiment ID: '
-                '{} -> {}'.format(requested_exp_id, opt.exp_id)
-            )
+        opt.save_dir = os.path.join(opt.exp_dir, opt.exp_id)
         opt.debug_dir = os.path.join(opt.save_dir, 'debug')
         print('The output will be saved to ', opt.save_dir)
         

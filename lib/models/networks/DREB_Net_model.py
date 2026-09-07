@@ -285,7 +285,9 @@ class DREB_Net(nn.Module):
         return layer
 
 
-    def forward(self, x, mode):
+    def forward(self, x, mode='val'):
+        # The default returns detection heads only, including during sharp/blur
+        # training. Module.train()/eval() still controls BatchNorm and gradients.
         out = self.stage0(x)
         s0 = out
         s1 = self.deblur_down1(s0)
@@ -442,4 +444,3 @@ if __name__ == '__main__':
 
     # average_inference_time_cpu = total_time_cpu / num_iterations
     # print(f'Average inference time on CPU: {average_inference_time_cpu*1000} ms')
-    

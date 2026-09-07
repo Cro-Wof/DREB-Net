@@ -19,7 +19,7 @@ from models.losses import FocalLoss
 from models.losses import RegL1Loss, RegLoss, NormRegL1Loss, RegWeightedL1Loss
 from models.losses import mse_loss, ssim_loss, PerceptualLoss, Stripformer_Loss
 from models.decode import ctdet_decode
-from models.utils import _sigmoid, _transpose_and_gather_feat
+from models.utils import _sigmoid
 from utils.utils import AverageMeter
 from utils.debugger import Debugger
 from utils.post_process import ctdet_post_process
@@ -39,10 +39,7 @@ class ModelWithLoss(torch.nn.Module):
         elif self.opt.inp_sharp_or_blur == 'blur':
             outputs = self.model(batch['blur_input'])
         elif self.opt.inp_sharp_or_blur == 'SB_deblur':
-            if getattr(self.opt, 'num_input_frames', 1) > 1:
-                outputs = self.model(batch['blur_clip'], phase)
-            else:
-                outputs = self.model(batch['blur_input'], phase)
+            outputs = self.model(batch['blur_input'], phase)
         loss, loss_stats = self.loss(outputs, batch, epoch, phase)
         return outputs[-1], loss, loss_stats
 
@@ -62,60 +59,9 @@ class CtdetLoss(torch.nn.Module):
 
         self.opt = opt
 
-    def _localization_quality_target(self, pred_wh, pred_reg, target_wh,
-                                     target_reg, ind, output_width):
-        """Compute detached IoU targets at the annotated center locations."""
-        grid_x = (ind % output_width).float()
-        grid_y = (ind // output_width).float()
-
-        pred_cx = grid_x + pred_reg[..., 0]
-        pred_cy = grid_y + pred_reg[..., 1]
-        target_cx = grid_x + target_reg[..., 0]
-        target_cy = grid_y + target_reg[..., 1]
-        pred_w = pred_wh[..., 0].clamp(min=1e-3)
-        pred_h = pred_wh[..., 1].clamp(min=1e-3)
-        target_w = target_wh[..., 0].clamp(min=1e-3)
-        target_h = target_wh[..., 1].clamp(min=1e-3)
-
-        pred_x1, pred_x2 = pred_cx - pred_w / 2, pred_cx + pred_w / 2
-        pred_y1, pred_y2 = pred_cy - pred_h / 2, pred_cy + pred_h / 2
-        target_x1, target_x2 = target_cx - target_w / 2, target_cx + target_w / 2
-        target_y1, target_y2 = target_cy - target_h / 2, target_cy + target_h / 2
-        inter_w = (torch.minimum(pred_x2, target_x2) -
-                   torch.maximum(pred_x1, target_x1)).clamp(min=0)
-        inter_h = (torch.minimum(pred_y2, target_y2) -
-                   torch.maximum(pred_y1, target_y1)).clamp(min=0)
-        intersection = inter_w * inter_h
-        union = pred_w * pred_h + target_w * target_h - intersection
-        return (intersection / union.clamp(min=1e-6)).detach().clamp(0, 1)
-
-    def _localization_quality_loss(self, output, batch):
-        if 'quality' not in output:
-            raise KeyError(
-                'localization_quality is enabled but the model did not '
-                'return a quality map'
-            )
-        ind = batch['ind'].long()
-        pred_quality = _sigmoid(
-            _transpose_and_gather_feat(output['quality'], ind)
-        ).squeeze(-1)
-        pred_wh = _transpose_and_gather_feat(output['wh'], ind)
-        pred_reg = _transpose_and_gather_feat(output['reg'], ind)
-        target = self._localization_quality_target(
-            pred_wh.detach(), pred_reg.detach(), batch['wh'], batch['reg'],
-            ind, output['quality'].shape[-1]
-        )
-        valid = batch['reg_mask'] > 0
-        if not valid.any():
-            return pred_quality.sum() * 0
-        return torch.nn.functional.smooth_l1_loss(
-            pred_quality[valid], target[valid], reduction='mean'
-        )
-
     def forward(self, outputs, batch, epoch, phase):
         opt = self.opt
         hm_loss, wh_loss, off_loss, deblur_loss = 0, 0, 0, 0
-        localization_quality_loss = None
         for s in range(opt.num_stacks):
             if opt.inp_sharp_or_blur == 'SB_deblur' and phase == 'train':
                 output, deblur_out = outputs[0][s], outputs[1]
@@ -123,9 +69,6 @@ class CtdetLoss(torch.nn.Module):
                 output = outputs[s]
             if not opt.mse_loss:
                 output['hm'] = _sigmoid(output['hm'])
-
-            if localization_quality_loss is None:
-                localization_quality_loss = output['hm'].sum() * 0
 
             if opt.eval_oracle_hm:
                 output['hm'] = batch['hm']
@@ -141,10 +84,6 @@ class CtdetLoss(torch.nn.Module):
                     output['reg'].shape[3], output['reg'].shape[2])).to(opt.device)
 
             hm_loss += self.crit(output['hm'], batch['hm']) / opt.num_stacks
-            if opt.localization_quality and phase == 'train':
-                localization_quality_loss += self._localization_quality_loss(
-                    output, batch
-                ) / opt.num_stacks
             if opt.wh_weight > 0:
                 if opt.dense_wh:
                     mask_weight = batch['dense_wh_mask'].sum() + 1e-4
@@ -188,10 +127,6 @@ class CtdetLoss(torch.nn.Module):
             loss = opt.hm_weight * hm_loss + opt.wh_weight * wh_loss + opt.off_weight * off_loss
             loss_stats = {'loss': loss, 'hm_loss': hm_loss, 'wh_loss': wh_loss, 'off_loss': off_loss}
             
-        if opt.localization_quality:
-            loss = loss + opt.localization_quality_weight * localization_quality_loss
-            loss_stats['localization_quality_loss'] = localization_quality_loss
-        loss_stats['loss'] = loss
         return loss, loss_stats
 
 
@@ -289,8 +224,6 @@ class CtdetTrainer(object):
         loss_states = ['loss', 'hm_loss', 'wh_loss', 'off_loss']
         if opt.inp_sharp_or_blur == 'SB_deblur':
             loss_states.append('deblur_loss')
-        if opt.localization_quality:
-            loss_states.append('localization_quality_loss')
         loss = CtdetLoss(opt)
         return loss_states, loss
 

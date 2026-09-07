@@ -6,7 +6,7 @@ import torch.utils.data as data
 import numpy as np
 import cv2
 import os
-from utils.image import flip, color_aug, color_aug_multi
+from utils.image import flip, color_aug
 from utils.image import get_affine_transform, affine_transform
 from utils.image import gaussian_radius, draw_umich_gaussian, draw_msra_gaussian
 from utils.image import draw_dense_reg
@@ -28,25 +28,13 @@ class CTDetDataset(data.Dataset):
         img_id = self.images[index]
         file_name = self.coco.loadImgs(ids=[img_id])[0]['file_name']
         sharp_img_path = os.path.join(self.sharp_img_dir, file_name)
-        if getattr(self.opt, 'num_input_frames', 1) > 1:
-            blur_file_names = self.get_temporal_file_names(file_name)
-        else:
-            blur_file_names = [file_name]
-        blur_img_paths = [os.path.join(self.blur_img_dir, name) for name in blur_file_names]
+        blur_img_path = os.path.join(self.blur_img_dir, file_name)
         ann_ids = self.coco.getAnnIds(imgIds=[img_id])
         anns = self.coco.loadAnns(ids=ann_ids)
         num_objs = min(len(anns), self.max_objs)
+        
         sharp_img = cv2.imread(sharp_img_path)
-        blur_imgs = [cv2.imread(path) for path in blur_img_paths]
-        if sharp_img is None:
-            raise RuntimeError('failed to decode sharp image: {}'.format(sharp_img_path))
-        for path, image in zip(blur_img_paths, blur_imgs):
-            if image is None:
-                raise RuntimeError('failed to decode blur image: {}'.format(path))
-            if image.shape != sharp_img.shape:
-                raise RuntimeError(
-                    'sharp/blur shape mismatch for {}: {} vs {}'.format(
-                        file_name, sharp_img.shape, image.shape))
+        blur_img = cv2.imread(blur_img_path)
 
         height, width = sharp_img.shape[0], sharp_img.shape[1]
         c = np.array([sharp_img.shape[1] / 2., sharp_img.shape[0] / 2.], dtype=np.float32)
@@ -76,36 +64,28 @@ class CTDetDataset(data.Dataset):
             if np.random.random() < self.opt.flip:
                 flipped = True
                 sharp_img = sharp_img[:, ::-1, :]
-                blur_imgs = [image[:, ::-1, :] for image in blur_imgs]
+                blur_img = blur_img[:, ::-1, :]
                 c[0] =  width - c[0] - 1
                 
 
         trans_input = get_affine_transform(c, s, 0, [input_w, input_h])
         # inp = cv2.warpAffine(img, trans_input, (input_w, input_h), flags=cv2.INTER_LINEAR)
         sharp_inp = cv2.warpAffine(sharp_img, trans_input, (input_w, input_h), flags=cv2.INTER_LINEAR)
-        blur_inps = [
-            cv2.warpAffine(image, trans_input, (input_w, input_h), flags=cv2.INTER_LINEAR)
-            for image in blur_imgs
-        ]
+        blur_inp = cv2.warpAffine(blur_img, trans_input, (input_w, input_h), flags=cv2.INTER_LINEAR)
         # cv2.imwrite('blur.jpg', blur_inp)
         # cv2.imwrite('sharp_inp.jpg', sharp_inp)
 
         # inp = (inp.astype(np.float32) / 255.)
         sharp_inp = (sharp_inp.astype(np.float32) / 255.)
-        blur_inps = [(image.astype(np.float32) / 255.) for image in blur_inps]
+        blur_inp = (blur_inp.astype(np.float32) / 255.)
 
         if self.split == 'train' and not self.opt.no_color_aug:
-            color_aug_multi(
-                self._data_rng,
-                [sharp_inp] + blur_inps,
-                self._eig_val,
-                self._eig_vec,
-            )
+            color_aug(self._data_rng, sharp_inp, blur_inp, self._eig_val, self._eig_vec)
 
         sharp_inp = (sharp_inp - self.mean) / self.std
-        blur_inps = [(image - self.mean) / self.std for image in blur_inps]
+        blur_inp = (blur_inp - self.mean) / self.std
         sharp_inp = sharp_inp.transpose(2, 0, 1)
-        blur_inps = [image.transpose(2, 0, 1) for image in blur_inps]
+        blur_inp = blur_inp.transpose(2, 0, 1)
         
         output_h = input_h // self.opt.down_ratio
         output_w = input_w // self.opt.down_ratio
@@ -154,16 +134,7 @@ class CTDetDataset(data.Dataset):
                 gt_det.append([ct[0] - w / 2, ct[1] - h / 2, 
                                ct[0] + w / 2, ct[1] + h / 2, 1, cls_id])
         
-        ret = {
-            'sharp_input': sharp_inp,
-            'blur_input': blur_inps[len(blur_inps) // 2],
-            'hm': hm,
-            'reg_mask': reg_mask,
-            'ind': ind,
-            'wh': wh,
-        }
-        if getattr(self.opt, 'num_input_frames', 1) > 1:
-            ret['blur_clip'] = np.stack(blur_inps, axis=0)
+        ret = {'sharp_input': sharp_inp, 'blur_input': blur_inp, 'hm': hm, 'reg_mask': reg_mask, 'ind': ind, 'wh': wh}
         if self.opt.dense_wh:
             hm_a = hm.max(axis=0, keepdims=True)
             dense_wh_mask = np.concatenate([hm_a, hm_a], axis=0)

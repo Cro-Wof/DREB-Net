@@ -6,16 +6,10 @@ import torch
 
 from .networks.DREB_Net_model import create_DREB_Net_detect
 from .networks.DREB_Net_tiny_model import create_DREB_Net_tiny_detect
-from .networks.DREB_Net_multiframe_model import (
-    create_DREB_Net_multiframe_detect,
-    create_DREB_Net_multiframe_quality_detect,
-)
 
 _model_factory = {
     'DREB_Net': create_DREB_Net_detect,
     'DREB_Net_tiny': create_DREB_Net_tiny_detect,
-    'DREB_Net_MF': create_DREB_Net_multiframe_detect,
-    'DREB_Net_MF_LQ': create_DREB_Net_multiframe_quality_detect,
 }
 
 
@@ -92,3 +86,4 @@ def save_model(path, epoch, model, optimizer=None):
     if not (optimizer is None):
         data['optimizer'] = optimizer.state_dict()
     torch.save(data, path)
+

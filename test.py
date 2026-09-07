@@ -102,40 +102,27 @@ def maybe_save_visualization(opt, dataset, image_id):
 
 
 class PrefetchDataset(torch.utils.data.Dataset):
-    def __init__(self, opt, dataset, pre_process_func, pre_process_clip_func=None):
+    def __init__(self, opt, dataset, pre_process_func):
         self.images = dataset.images
         self.load_image_func = dataset.coco.loadImgs
         self.sharp_img_dir = dataset.sharp_img_dir
         self.blur_img_dir = dataset.blur_img_dir
-        self.temporal_context = getattr(dataset, '_temporal_context', {})
         if opt.inp_sharp_or_blur == 'sharp':
             self.img_dir = self.sharp_img_dir
         elif opt.inp_sharp_or_blur == 'blur' or opt.inp_sharp_or_blur == 'SB_deblur':
             self.img_dir = self.blur_img_dir
 
         self.pre_process_func = pre_process_func
-        self.pre_process_clip_func = pre_process_clip_func
         self.opt = opt
     
     def __getitem__(self, index):
         img_id = self.images[index]
         img_info = self.load_image_func(ids=[img_id])[0]
-        center_file_name = img_info['file_name']
-        if self.opt.num_input_frames > 1:
-            file_names = self.temporal_context[center_file_name]
-        else:
-            file_names = [center_file_name]
-        frame_paths = [os.path.join(self.img_dir, name) for name in file_names]
-        frames = [cv2.imread(path) for path in frame_paths]
-        if any(frame is None for frame in frames):
-            raise RuntimeError('failed to decode test clip for {}'.format(center_file_name))
-        image = frames[len(frames) // 2]
+        img_path = os.path.join(self.img_dir, img_info['file_name'])
+        image = cv2.imread(img_path)
         images, meta = {}, {}
-        for scale in self.opt.test_scales:
-            if self.opt.num_input_frames > 1:
-                images[scale], meta[scale] = self.pre_process_clip_func(frames, scale)
-            else:
-                images[scale], meta[scale] = self.pre_process_func(image, scale)
+        for scale in opt.test_scales:
+            images[scale], meta[scale] = self.pre_process_func(image, scale)
         return img_id, {'images': images, 'image': image, 'meta': meta}
 
     def __len__(self):
@@ -155,7 +142,7 @@ def prefetch_test(opt):
     detector = Detector(opt)
     
     data_loader = torch.utils.data.DataLoader(
-        PrefetchDataset(opt, dataset, detector.pre_process, detector.pre_process_clip),
+        PrefetchDataset(opt, dataset, detector.pre_process), 
         batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
 
     results = {}
@@ -210,18 +197,11 @@ def test(opt):
         img_id = dataset.images[ind]
         img_info = dataset.coco.loadImgs(ids=[img_id])[0]
         if opt.inp_sharp_or_blur == 'sharp':
-            input_dir = dataset.sharp_img_dir
+            img_path = os.path.join(dataset.sharp_img_dir, img_info['file_name'])
         elif opt.inp_sharp_or_blur == 'blur' or opt.inp_sharp_or_blur == 'SB_deblur':
-            input_dir = dataset.blur_img_dir
+            img_path = os.path.join(dataset.blur_img_dir, img_info['file_name'])
 
-        if opt.num_input_frames > 1:
-            file_names = dataset.get_temporal_file_names(img_info['file_name'])
-            img_paths = [os.path.join(input_dir, name) for name in file_names]
-            ret = detector.run(img_paths)
-            img_path = img_paths[len(img_paths) // 2]
-        else:
-            img_path = os.path.join(input_dir, img_info['file_name'])
-            ret = detector.run(img_path)
+        ret = detector.run(img_path)
         
         results[img_id] = ret['results']
         vis_path = maybe_save_visualization(opt, dataset, img_id)
