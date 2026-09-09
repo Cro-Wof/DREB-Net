@@ -5,11 +5,11 @@ ARCH=DREB_Net
 EXP_ID=train_DREB_Net_VID_sharp
 DATASET=visdrone_vid
 INP_SHARP_OR_BLUR=sharp
-SHARP_DATA_DIR=/home/zhuhongxiang/DataSet/VisDrone2019-VID
-BLUR_DATA_DIR=/home/zhuhongxiang/DataSet/VisDrone2019-VID-DREB
+SHARP_DATA_DIR=/hy-tmp/VisDrone2019-VID
+BLUR_DATA_DIR=/hy-tmp/VisDrone2019-VID-DREB
 # Keep these defaults aligned with the completed joint-training run recorded
 # in opt.txt, so the sharp-input result is directly comparable.
-CUDA_TRAIN_DEVICE=${CUDA_TRAIN_DEVICE:-1}
+CUDA_TRAIN_DEVICE=${CUDA_TRAIN_DEVICE:-0}
 MASTER_BATCH_SIZE=${MASTER_BATCH_SIZE:-4}
 MAX_FRAMES_PER_SEQUENCE=${MAX_FRAMES_PER_SEQUENCE:-50}
 NUM_EPOCHS=${NUM_EPOCHS:-200}
