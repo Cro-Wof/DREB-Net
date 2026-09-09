@@ -1,0 +1,13 @@
+torch
+torchvision
+opencv-python
+Cython
+numba
+progress
+matplotlib
+easydict
+scipy
+tqdm
+numpy
+scikit-video
+moviepy
