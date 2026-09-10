@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 
 ARCH=${ARCH:-DREB_Net}
-EXP_ID=${EXP_ID:-test_VID_single_epoch11}
+EXP_ID=${EXP_ID:-test_VID_single_test-dev}
 DATASET=visdrone_vid
 INP_SHARP_OR_BLUR=SB_deblur
 SHARP_DATA_DIR=${SHARP_DATA_DIR:-/home/zhuhongxiang/DataSet/VisDrone2019-VID}
 BLUR_DATA_DIR=${BLUR_DATA_DIR:-/home/zhuhongxiang/DataSet/VisDrone2019-VID-DREB}
-MODEL_PATH=${MODEL_PATH:-./exp/detect/train/train_DREB_Net_VID_original/model_best.pth}
+MODEL_PATH=${MODEL_PATH:-./exp/detect/train/train_DREB_Net_VID_original_lr2e-4/model_last.pth}
 CUDA_VAL_DEVICE=${CUDA_VAL_DEVICE:-1}
 MAX_FRAMES_PER_SEQUENCE=${MAX_FRAMES_PER_SEQUENCE:-50}
 VIS_THRESH=${VIS_THRESH:-0.3}
 VIS_DIR=${VIS_DIR:-}
-TEST_SPLIT=${TEST_SPLIT:-val}
+TEST_SPLIT=${TEST_SPLIT:-test-dev}
 FLIP_TEST=${FLIP_TEST:-0}
 SAVE_VISUALIZATIONS=${SAVE_VISUALIZATIONS:-1}   #结果可视图
 

@@ -159,12 +159,140 @@ class VisDrone2019DET(data.Dataset):
     def save_results(self, results, save_dir):
         json.dump(self.convert_eval_format(results), 
                                 open('{}/results.json'.format(save_dir), 'w'))
+
+    def _summarize_detection_counts(self, detections, score_thresh=0.3,
+                                    iou_thresh=0.5):
+        """Return counts from the serialized COCO detections."""
+        true_positives = 0
+        false_positives = 0
+        false_negatives = 0
+        predicted_count = 0
+        ground_truth_count = 0
+        per_class = {}
+
+        def box_iou(box_a, box_b):
+            ax1, ay1, ax2, ay2 = box_a
+            bx1, by1, bx2, by2 = box_b
+            inter_x1 = max(ax1, bx1)
+            inter_y1 = max(ay1, by1)
+            inter_x2 = min(ax2, bx2)
+            inter_y2 = min(ay2, by2)
+            inter_w = max(0.0, inter_x2 - inter_x1)
+            inter_h = max(0.0, inter_y2 - inter_y1)
+            inter_area = inter_w * inter_h
+            area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+            area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+            union_area = area_a + area_b - inter_area
+            return inter_area / union_area if union_area > 0 else 0.0
+
+        predictions_by_category = {}
+        evaluated_image_ids = set(self.images)
+        for detection in detections:
+            image_id = int(detection['image_id'])
+            category_id = int(detection['category_id'])
+            if image_id not in evaluated_image_ids or category_id not in self._valid_ids:
+                continue
+            if float(detection['score']) >= score_thresh:
+                predictions_by_category.setdefault(category_id, []).append(
+                    (float(detection['score']), image_id, detection['bbox']))
+
+        for cls_ind, class_name in enumerate(self.class_name, start=1):
+            category_id = self._valid_ids[cls_ind - 1]
+            class_tp = 0
+            class_fp = 0
+            class_fn = 0
+
+            predictions = []
+            for score, image_id, bbox in predictions_by_category.get(category_id, []):
+                x, y, width, height = bbox
+                predictions.append((score, image_id,
+                                    (x, y, x + width, y + height)))
+
+            predictions.sort(key=lambda item: item[0], reverse=True)
+            matched_ground_truth = {}
+
+            for score, image_id, bbox in predictions:
+                del score  # The score is only used for matching order.
+                gt_boxes = []
+                for ann in self.coco.imgToAnns.get(image_id, []):
+                    if ann.get('category_id') != category_id or ann.get('ignore', 0):
+                        continue
+                    x, y, width, height = ann['bbox']
+                    gt_boxes.append((x, y, x + width, y + height))
+
+                matched = matched_ground_truth.setdefault(image_id, set())
+                best_iou = iou_thresh
+                best_gt_index = None
+                for gt_index, gt_box in enumerate(gt_boxes):
+                    if gt_index in matched:
+                        continue
+                    overlap = box_iou(bbox, gt_box)
+                    if overlap >= best_iou:
+                        best_iou = overlap
+                        best_gt_index = gt_index
+
+                if best_gt_index is None:
+                    class_fp += 1
+                else:
+                    matched.add(best_gt_index)
+                    class_tp += 1
+
+            for image_id in self.images:
+                gt_count = sum(
+                    1 for ann in self.coco.imgToAnns.get(image_id, [])
+                    if ann.get('category_id') == category_id
+                    and not ann.get('ignore', 0)
+                )
+                matched_count = len(matched_ground_truth.get(image_id, set()))
+                class_fn += gt_count - matched_count
+
+            class_predicted = class_tp + class_fp
+            predicted_count += class_predicted
+            ground_truth_count += class_tp + class_fn
+            true_positives += class_tp
+            false_positives += class_fp
+            false_negatives += class_fn
+            per_class[class_name] = (class_predicted, class_tp, class_fp, class_fn)
+
+        precision = (true_positives / float(true_positives + false_positives)
+                     if true_positives + false_positives else 0.0)
+        recall = (true_positives / float(true_positives + false_negatives)
+                  if true_positives + false_negatives else 0.0)
+        f1 = (2.0 * precision * recall / (precision + recall)
+              if precision + recall else 0.0)
+
+        lines = [
+            '\nDetection metrics (score >= {:.2f}, IoU >= {:.2f}):'.format(
+                score_thresh, iou_thresh),
+            '  Predicted boxes: {}'.format(predicted_count),
+            '  Ground-truth boxes: {}'.format(ground_truth_count),
+            '  TP: {} | FP: {} | FN: {}'.format(
+                true_positives, false_positives, false_negatives),
+            '  Precision: {:.4f} | Recall: {:.4f} | F1: {:.4f}'.format(
+                precision, recall, f1),
+            '  Per class:',
+        ]
+        for class_name in self.class_name:
+            class_predicted, class_tp, class_fp, class_fn = per_class[class_name]
+            class_precision = (class_tp / float(class_tp + class_fp)
+                               if class_tp + class_fp else 0.0)
+            class_recall = (class_tp / float(class_tp + class_fn)
+                            if class_tp + class_fn else 0.0)
+            lines.append(
+                '    {}: predicted={} TP={} FP={} FN={} precision={:.4f} recall={:.4f}'.format(
+                    class_name, class_predicted, class_tp, class_fp, class_fn,
+                    class_precision, class_recall))
+        return '\n'.join(lines) + '\n'
     
     def run_eval(self, results, save_dir):
         # result_json = os.path.join(save_dir, "results.json")
         # detections  = self.convert_eval_format(results)
         # json.dump(detections, open(result_json, "w"))
         self.save_results(results, save_dir)
+        with open('{}/results.json'.format(save_dir), 'r') as f:
+            serialized_detections = json.load(f)
+        detection_metrics = self._summarize_detection_counts(
+            serialized_detections, score_thresh=0.3, iou_thresh=0.5)
         coco_dets = self.coco.loadRes('{}/results.json'.format(save_dir))
         coco_eval = COCOeval(self.coco, coco_dets, "bbox")
         # Evaluate exactly the images used by this dataset instance.  This is
@@ -188,7 +316,9 @@ class VisDrone2019DET(data.Dataset):
         # 获取方法输出
         results = my_stdout.getvalue()
         print(results)
+        print(detection_metrics)
         # 将输出写入到文本文件
         with open(os.path.join(save_dir, 'result.txt'), 'a') as f:
             f.write(results)
             f.write('\n')
+            f.write(detection_metrics)
